@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyCharm / JetBrains project metadata
+# Most of .idea/ is fine to commit (vcs.xml, modules.xml, *.iml, misc.xml,
+# inspectionProfiles/) since it's small and not machine-specific for this repo.
+# User-local/generated files (workspace state, shelved changes, caches, any
+# datasource credentials) are already excluded via .idea/.gitignore.
+
+# Diagnostic/log output produced by the scripts in this repo
+*.log
+
