@@ -17,3 +17,10 @@ journalctl -u wpa_supplicant -u NetworkManager --no-pager --since "-3 hours" \
 ```
 
 Then proceed to the [wifi-troubleshooting-pi-zero2w.md](wifi-troubleshooting-pi-zero2w.md) doc for next steps or AI help.
+
+If the Pi has **no built-in wifi** (USB wifi/ethernet dongles via a hub instead), use
+`wifi-usb-diag.sh` instead of `wifi-brcm-diag.sh` — it doesn't assume the `brcmfmac`
+chip and instead captures `lsusb`, interface-to-driver mapping, and USB-relevant
+`dmesg`. See [wifi-troubleshooting-pi-zero-usb.md](wifi-troubleshooting-pi-zero-usb.md)
+for that device class.
+
