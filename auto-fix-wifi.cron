@@ -1,0 +1,10 @@
+# Example /etc/cron.d/auto-fix-wifi entry.
+# Copy this file to /etc/cron.d/auto-fix-wifi (system crontab format includes
+# the user field) and adjust the script path if not installed at
+# /usr/local/sbin/auto-fix-wifi.sh.
+#
+# Runs every 10 minutes as root. The script has its own flock-based lock, so
+# a slow run (retries + fix) will never overlap with the next cron tick.
+
+*/10 * * * * root /usr/local/sbin/auto-fix-wifi.sh >>/var/log/auto-fix-wifi/cron.log 2>&1
+

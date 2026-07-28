@@ -24,3 +24,44 @@ chip and instead captures `lsusb`, interface-to-driver mapping, and USB-relevant
 `dmesg`. See [wifi-troubleshooting-pi-zero-usb.md](wifi-troubleshooting-pi-zero-usb.md)
 for that device class.
 
+## auto-fix-wifi.sh — always-on monitor + auto-recovery
+
+`auto-fix-wifi.sh` is a driver-agnostic (works with either `brcmfmac` or a USB
+dongle like `rtl8192cu`) always-on wifi health check, meant to run from root's
+cron periodically. It supersedes manually running the diag/retry scripts for
+*ongoing* monitoring; those scripts remain useful for one-shot manual digging.
+
+Each run: pings the gateway, does a DNS lookup, and does an HTTPS check — all
+bound to the wifi interface where possible so a working `eth0` on dual-NIC
+boxes can't mask a dead wifi link. If any check fails, it waits 10s and
+retries the whole battery, up to 3 times. If it's still down, it tries a
+scoped wifi-only fix (disconnect + reload the wifi driver module + reconnect)
+before escalating to a full fix (stop NetworkManager, reload the module,
+start NetworkManager). If the fix doesn't recover connectivity for 5
+consecutive cron cycles (configurable), it reboots as a last resort.
+
+**First run auto-bootstraps** `/etc/auto-fix-wifi.conf` — discovers the wifi
+interface, gateway IP, DNS server, and wifi driver module name, and fills in
+sane defaults for check targets/timings. Re-run with `--rediscover` to force
+re-discovery of hardware-specific values (e.g. after swapping a USB dongle).
+Policy settings (check targets, retry counts, reboot threshold) can be hand-
+edited in the conf file afterwards and won't be overwritten.
+
+**Install:**
+
+```bash
+sudo cp auto-fix-wifi.sh /usr/local/sbin/auto-fix-wifi.sh
+sudo chmod +x /usr/local/sbin/auto-fix-wifi.sh
+sudo cp auto-fix-wifi.cron /etc/cron.d/auto-fix-wifi
+sudo cp auto-fix-wifi.logrotate /etc/logrotate.d/auto-fix-wifi
+```
+
+**Logs:**
+
+- `/var/log/auto-fix-wifi/detail.log` — full step-by-step output of every
+  check, every run (for pulling off the SD card later).
+- High-level pass/fail is logged to syslog every run (`logger -t auto-fix-wifi`).
+- Any restart/reload/reboot action is logged loudly to syslog
+  (`warning`/`err`/`crit`) **and** to `/var/log/auto-fix-wifi/actions.log`, so
+  you can `tail -f` just that file to see intervention history at a glance.
+
