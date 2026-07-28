@@ -65,3 +65,16 @@ sudo cp auto-fix-wifi.logrotate /etc/logrotate.d/auto-fix-wifi
   (`warning`/`err`/`crit`) **and** to `/var/log/auto-fix-wifi/actions.log`, so
   you can `tail -f` just that file to see intervention history at a glance.
 
+**Reading the detail log — a useful diagnostic pattern:** ping (gateway) and
+DNS checks are inherently weak signals on their own — the gateway is LAN-local
+by definition, and the discovered DNS server may itself be reachable purely
+over LAN routing even when the network's WAN/internet uplink is down (seen in
+practice on a dual-subnet box: DNS resolved fine over wifi because the
+resolver was reachable LAN-side, but the HTTPS check correctly failed because
+wifi's subnet had no working internet route). If you see `ping check: OK` and
+`dns check: OK` but `http check: FAILED` repeatedly, that's a strong hint the
+problem is upstream (the AP/router isn't routing this client to the internet
+— client isolation, a guest/IoT VLAN with no WAN uplink, or an ISP gateway
+requiring device approval) rather than anything fixable by reloading the
+wifi driver on the Pi itself.
+

@@ -111,13 +111,17 @@ discover_wifi_iface() {
 
 discover_gateway() {
   # $1 = wifi iface
-  gw=$(ip route show dev "$1" 2>/dev/null | awk '/^default/{print $2; exit}') || true
+  # "ip route show dev <iface>" omits the "dev <iface>" token, so the "via"
+  # field position shifts depending on other route flags present (proto,
+  # src, metric, ...) -- search for the token after "via" rather than
+  # assuming a fixed field index.
+  gw=$(ip route show dev "$1" 2>/dev/null | awk '/^default/{for(i=1;i<=NF;i++) if($i=="via"){print $(i+1); exit}}') || true
   if [ -z "${gw:-}" ]; then
     gw=$(nmcli -g IP4.GATEWAY device show "$1" 2>/dev/null | head -1) || true
   fi
   if [ -z "${gw:-}" ]; then
-    # last resort: whatever the system-wide default route is
-    gw=$(ip route show default 2>/dev/null | awk '{print $3; exit}') || true
+    # last resort: whatever route on this iface specifically shows as default
+    gw=$(ip route show default 2>/dev/null | awk -v ifc="$1" '{for(i=1;i<=NF;i++){if($i=="dev" && $(i+1)==ifc){for(j=1;j<=NF;j++) if($j=="via") print $(j+1); exit}}}') || true
   fi
   echo "${gw:-}"
 }
@@ -398,5 +402,6 @@ if [ "$fail_count" -ge "$REBOOT_THRESHOLD" ]; then
 fi
 
 exit 1
+
 
 
