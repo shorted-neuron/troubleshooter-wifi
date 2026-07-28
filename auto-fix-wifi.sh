@@ -38,6 +38,12 @@
 
 set -eu
 
+# cron's default PATH is minimal (often just /usr/bin:/bin) and won't find
+# modprobe/rmmod/ip/iw/nmcli/systemctl, which typically live in /sbin or
+# /usr/sbin. Force a full PATH regardless of invocation context.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
+
 CONF="/etc/auto-fix-wifi.conf"
 STATE_DIR="/var/lib/auto-fix-wifi"
 FAIL_COUNT_FILE="$STATE_DIR/consecutive_fix_failures"
@@ -433,6 +439,7 @@ if [ "$fail_count" -ge "$REBOOT_THRESHOLD" ]; then
 fi
 
 exit 1
+
 
 
 
