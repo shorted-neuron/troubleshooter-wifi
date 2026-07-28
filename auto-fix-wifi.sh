@@ -10,12 +10,18 @@
 # than hardcoding it.
 #
 # Design summary:
+# Design summary:
 #   - First run (or any run where config is incomplete) auto-bootstraps
-#     /etc/auto-fix-wifi.conf: wifi interface, gateway IP, DNS server, wifi
-#     driver module name, check targets, timings. Re-run with --rediscover
-#     to force re-bootstrapping (e.g. after swapping dongles).
-#   - Each cycle: ping gateway (bound to wifi iface) + DNS lookup + HTTP(S)
-#     check (bound to wifi iface where possible). All three must pass.
+#     /etc/auto-fix-wifi.conf: wifi interface, gateway IP, DNS server
+#     (defaults to the system resolver from /etc/resolv.conf, freely
+#     override-able), wifi driver module name, check targets, timings.
+#     Re-run with --rediscover to force re-bootstrapping (e.g. after
+#     swapping dongles).
+#   - Each cycle: ping gateway (bound to wifi iface) + DNS lookup (against
+#     the configured DNS server) + HTTP(S) check (bound to wifi iface where
+#     possible, redirects never followed -- any response status counts as
+#     "up", useful when the check target is a restrictive network's own
+#     gateway IP rather than a real internet endpoint). All three must pass.
 #   - On failure: wait 10s, retry the whole battery, up to RETRY_COUNT times.
 #   - If still failing: try a scoped wifi-only fix (disconnect + reload wifi
 #     driver module + reconnect). If that doesn't recover it, escalate to a
@@ -128,12 +134,19 @@ discover_gateway() {
 
 discover_dns_server() {
   # $1 = wifi iface
-  dns=$(nmcli -g IP4.DNS device show "$1" 2>/dev/null | head -1) || true
+  # "The system resolver" means /etc/resolv.conf's nameserver -- that's the
+  # literal, authoritative answer to "what DNS server does this box use"
+  # regardless of which interface currently owns the default route. Fall
+  # back to nmcli/resolvectl only if resolv.conf is somehow unusable.
+  dns=""
+  if [ -f /etc/resolv.conf ]; then
+    dns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf) || true
+  fi
   if [ -z "${dns:-}" ] && command -v resolvectl >/dev/null 2>&1; then
     dns=$(resolvectl dns "$1" 2>/dev/null | awk '{print $NF}') || true
   fi
-  if [ -z "${dns:-}" ] && [ -f /etc/resolv.conf ]; then
-    dns=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf) || true
+  if [ -z "${dns:-}" ]; then
+    dns=$(nmcli -g IP4.DNS device show "$1" 2>/dev/null | head -1) || true
   fi
   echo "${dns:-}"
 }
@@ -257,11 +270,29 @@ check_http() {
     log_detail "http check: skipped, curl not installed"
     return 1
   fi
-  if curl --interface "$WIFI_IFACE" -sS -f --max-time "$HTTP_TIMEOUT" -o /dev/null "$HTTP_CHECK_URL" >>"$DETAIL_LOG" 2>&1; then
-    log_detail "http check: OK ($HTTP_CHECK_URL via $WIFI_IFACE)"
+  # Deliberately no -f (accept any HTTP response status, including
+  # redirects/401/403/etc -- we only care that *something* answered) and no
+  # -L (never follow a redirect). This matters on networks with strict
+  # filtering where only a local endpoint (e.g. the AP's own admin/gateway
+  # IP) is configured as the check target: a 301 from the gateway's web UI
+  # still proves the HTTP path works, and following it could send us
+  # somewhere unexpected. curl only returns nonzero here on a real
+  # transport-level failure (refused/timeout/DNS failure), not on the HTTP
+  # status code.
+  # (the "if" here is deliberate -- with `set -e`, a bare
+  # `http_code=$(cmd)` assignment would abort the script on curl's nonzero
+  # exit instead of letting us handle it)
+  if http_code=$(curl --interface "$WIFI_IFACE" -sS --max-time "$HTTP_TIMEOUT" \
+      -o /dev/null -w '%{http_code}' "$HTTP_CHECK_URL" 2>>"$DETAIL_LOG"); then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" -eq 0 ] && [ -n "$http_code" ]; then
+    log_detail "http check: OK ($HTTP_CHECK_URL via $WIFI_IFACE, status=$http_code, redirects not followed)"
     return 0
   else
-    log_detail "http check: FAILED ($HTTP_CHECK_URL via $WIFI_IFACE)"
+    log_detail "http check: FAILED ($HTTP_CHECK_URL via $WIFI_IFACE, curl_rc=$rc status=${http_code:-none})"
     return 1
   fi
 }
@@ -402,6 +433,10 @@ if [ "$fail_count" -ge "$REBOOT_THRESHOLD" ]; then
 fi
 
 exit 1
+
+
+
+
 
 
 
