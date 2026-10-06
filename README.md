@@ -46,12 +46,16 @@ reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to
 something reachable from the network the Pi is on (the default assumes internet
 access; isolated VLANs have none), or leave it empty to skip the HTTP check.
 Each run also warns if the configured `GATEWAY_IP` differs from the live
-default route (stale config after moving networks); fix with `--rediscover`.
+default route (stale config after moving networks); fix with `./install.sh --reconfigure`.
 
 **First run auto-bootstraps** `/etc/auto-fix-wifi.conf` — discovers the wifi
 interface, gateway IP, DNS server, and wifi driver module name, and fills in
-sane defaults for check targets/timings. Re-run with `--rediscover` to force
+sane defaults for check targets/timings. Every start also fills in any setting
+missing from the conf (e.g. ones added by a newer version) without touching
+existing values; what it added is logged as `bootstrap:` lines in `detail.log`.
+Re-run with `--rediscover` (or `./install.sh --reconfigure`) to force
 re-discovery of hardware-specific values (e.g. after swapping a USB dongle).
+Rediscovery never replaces a working value with an empty result (link down).
 Policy settings (check targets, retry counts, reboot threshold) can be hand-
 edited in the conf file afterwards and won't be overwritten. The conf is plain
 `KEY=value`, read literally (not sourced by a shell): write values bare, e.g.
@@ -61,8 +65,15 @@ One pair of surrounding quotes and trailing whitespace/CR are tolerated and stri
 **Install:**
 
 ```bash
-./install.sh   # needs sudo; installs script + cron + logrotate, runs first bootstrap
+./install.sh                # needs sudo; installs script + cron + logrotate, runs bootstrap
+./install.sh --reconfigure  # same, plus re-discover iface/gateway/DNS/driver
 ```
+
+Plain `./install.sh` is also the upgrade path: it keeps your conf and fills in any
+new settings. Use `--reconfigure` after swapping a dongle or moving the Pi to
+another network. It rewrites only the discovered values (`WIFI_IFACE`, `GATEWAY_IP`,
+`DNS_SERVER`, `WIFI_DRIVER`), so a hand-edited `DNS_SERVER` is replaced too; policy
+settings such as `HTTP_CHECK_URL` and the reboot limits are kept.
 
 Then review `/etc/auto-fix-wifi.conf` (especially `HTTP_CHECK_URL`). Install `dig`
 too (`sudo apt install dnsutils`, or `bind9-dnsutils`): it lets the DNS check bind to

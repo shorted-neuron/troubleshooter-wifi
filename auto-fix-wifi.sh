@@ -205,6 +205,26 @@ discover_wifi_driver() {
   fi
 }
 
+conf_refresh() {
+  # $1 = key, $2 = freshly discovered value. On --rediscover, never replace a
+  # working value with an empty result (e.g. link down while rediscovering).
+  old=$(conf_get "$1")
+  if [ -z "$2" ] && [ -n "$old" ]; then
+    log_detail "bootstrap: WARNING could not rediscover $1 (nothing found); keeping $old"
+    return 0
+  fi
+  conf_set "$1" "$2"
+  log_detail "bootstrap: $1=$2"
+}
+
+conf_default() {
+  # $1 = key, $2 = default. Fills in a missing/empty key; never overwrites a
+  # value. Logged, so a --reconfigure shows exactly which params it added.
+  [ -z "$(conf_get "$1")" ] || return 0
+  conf_set "$1" "$2"
+  log_detail "bootstrap: added missing default $1=$2"
+}
+
 bootstrap_config_if_needed() {
   ensure_dirs
   if [ ! -f "$CONF" ]; then
@@ -224,44 +244,40 @@ EOF
     log_detail "bootstrap: WIFI_IFACE=$cur_iface"
   fi
 
-  cur_gw=$(conf_get GATEWAY_IP)
-  if [ "$REDISCOVER" = "1" ] || [ -z "$cur_gw" ]; then
-    cur_gw=$(discover_gateway "$cur_iface")
-    conf_set GATEWAY_IP "$cur_gw"
-    log_detail "bootstrap: GATEWAY_IP=$cur_gw"
+  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get GATEWAY_IP)" ]; then
+    conf_refresh GATEWAY_IP "$(discover_gateway "$cur_iface")"
   fi
 
-  cur_dns=$(conf_get DNS_SERVER)
-  if [ "$REDISCOVER" = "1" ] || [ -z "$cur_dns" ]; then
-    cur_dns=$(discover_dns_server "$cur_iface")
-    conf_set DNS_SERVER "$cur_dns"
-    log_detail "bootstrap: DNS_SERVER=$cur_dns"
+  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get DNS_SERVER)" ]; then
+    conf_refresh DNS_SERVER "$(discover_dns_server "$cur_iface")"
   fi
 
-  cur_drv=$(conf_get WIFI_DRIVER)
-  if [ "$REDISCOVER" = "1" ] || [ -z "$cur_drv" ]; then
-    cur_drv=$(discover_wifi_driver "$cur_iface")
-    conf_set WIFI_DRIVER "$cur_drv"
-    log_detail "bootstrap: WIFI_DRIVER=$cur_drv"
+  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get WIFI_DRIVER)" ]; then
+    conf_refresh WIFI_DRIVER "$(discover_wifi_driver "$cur_iface")"
   fi
 
-  # Fixed defaults, only set if absent (never overwritten by --rediscover,
-  # these aren't hardware-discovered, they're policy).
-  [ -n "$(conf_get DNS_CHECK_NAME)" ]   || conf_set DNS_CHECK_NAME "example.com"
+  # Fixed defaults, only set if absent/empty (never overwritten by
+  # --rediscover, these aren't hardware-discovered, they're policy). This runs
+  # on every start, so a conf from an older version gets any newly added
+  # settings filled in automatically.
+  conf_default DNS_CHECK_NAME "example.com"
   # HTTP_CHECK_URL: only defaulted when the key is absent. An existing empty
   # value means "skip the HTTP check" (isolated networks with no internet and
   # no reachable local web endpoint). The default assumes internet access --
   # set it to something reachable on this network segment.
-  conf_has HTTP_CHECK_URL || conf_set HTTP_CHECK_URL "https://detectportal.firefox.com/success.txt"
-  [ -n "$(conf_get RETRY_COUNT)" ]      || conf_set RETRY_COUNT "3"
-  [ -n "$(conf_get RETRY_WAIT)" ]       || conf_set RETRY_WAIT "10"
-  [ -n "$(conf_get PING_TIMEOUT)" ]     || conf_set PING_TIMEOUT "2"
-  [ -n "$(conf_get HTTP_TIMEOUT)" ]     || conf_set HTTP_TIMEOUT "5"
-  [ -n "$(conf_get MODULE_RELOAD_WAIT)" ] || conf_set MODULE_RELOAD_WAIT "5"
-  [ -n "$(conf_get IFACE_WAIT_MAX)" ]   || conf_set IFACE_WAIT_MAX "15"
-  [ -n "$(conf_get REBOOT_THRESHOLD)" ] || conf_set REBOOT_THRESHOLD "5"
-  [ -n "$(conf_get MAX_REBOOTS_PER_DAY)" ] || conf_set MAX_REBOOTS_PER_DAY "4"
-  [ -n "$(conf_get MIN_REBOOT_INTERVAL)" ] || conf_set MIN_REBOOT_INTERVAL "60m"
+  if ! conf_has HTTP_CHECK_URL; then
+    conf_set HTTP_CHECK_URL "https://detectportal.firefox.com/success.txt"
+    log_detail "bootstrap: added missing default HTTP_CHECK_URL"
+  fi
+  conf_default RETRY_COUNT "3"
+  conf_default RETRY_WAIT "10"
+  conf_default PING_TIMEOUT "2"
+  conf_default HTTP_TIMEOUT "5"
+  conf_default MODULE_RELOAD_WAIT "5"
+  conf_default IFACE_WAIT_MAX "15"
+  conf_default REBOOT_THRESHOLD "5"
+  conf_default MAX_REBOOTS_PER_DAY "4"
+  conf_default MIN_REBOOT_INTERVAL "60m"
 }
 
 load_config() {

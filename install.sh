@@ -1,6 +1,31 @@
 #!/bin/sh
 # install.sh -- install auto-fix-wifi.sh from a cloned checkout of this repo.
+#
+#   ./install.sh                install or upgrade. Keeps your existing
+#                               /etc/auto-fix-wifi.conf and fills in any
+#                               settings it doesn't have yet.
+#   ./install.sh --reconfigure  same, and also re-discovers the hardware/
+#                               network values (wifi iface, gateway, DNS
+#                               server, driver module) -- use after swapping
+#                               a dongle or moving the Pi to another network.
+#                               Policy settings you edited (check URL,
+#                               retries, reboot limits...) are kept.
 set -eu
+
+usage() {
+  echo "usage: $0 [--reconfigure]" >&2
+}
+
+BOOT_ARGS=""
+case "${1:-}" in
+  "") ;;
+  --reconfigure) BOOT_ARGS="--rediscover" ;;
+  -h|--help) usage; exit 0 ;;
+  *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "too many arguments" >&2; usage; exit 2
+fi
 
 SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 BIN=/usr/local/sbin/auto-fix-wifi.sh
@@ -32,8 +57,14 @@ if ! command -v dig >/dev/null 2>&1; then
   echo "Install it: sudo apt install dnsutils  (bind9-dnsutils on newer releases)" >&2
 fi
 
-echo "Running first-time bootstrap (discovers iface/gateway/DNS/driver)..."
-$SUDO "$BIN" || true
+if [ -n "$BOOT_ARGS" ]; then
+  echo "Reconfiguring: re-discovering iface/gateway/DNS/driver, filling in any missing settings..."
+else
+  echo "Running bootstrap (discovers iface/gateway/DNS/driver on first install; fills in any missing settings)..."
+fi
+# shellcheck disable=SC2086  # BOOT_ARGS is intentionally unquoted (empty or one flag)
+$SUDO "$BIN" $BOOT_ARGS || true
+echo "What the bootstrap changed: grep 'bootstrap:' /var/log/auto-fix-wifi/detail.log | tail"
 
 # Validate HTTP_CHECK_URL now: the default assumes internet access, which an
 # isolated network doesn't have. A bad target is only an advisory in the
@@ -75,5 +106,5 @@ echo "Done. Config file: $CONF"
 echo "Review/edit it (check targets, retry counts, reboot threshold), e.g.:"
 echo "  sudo \${EDITOR:-nano} $CONF"
 echo "Logs: /var/log/auto-fix-wifi/{detail.log,actions.log}"
-echo "Re-run '$BIN --rediscover' after swapping hardware (e.g. a new dongle)."
+echo "After swapping hardware or changing networks, re-run '$0 --reconfigure'."
 
