@@ -10,7 +10,6 @@
 # than hardcoding it.
 #
 # Design summary:
-# Design summary:
 #   - First run (or any run where config is incomplete) auto-bootstraps
 #     /etc/auto-fix-wifi.conf: wifi interface, gateway IP, DNS server
 #     (defaults to the system resolver from /etc/resolv.conf, freely
@@ -21,14 +20,24 @@
 #     the configured DNS server) + HTTP(S) check (bound to wifi iface where
 #     possible, redirects never followed -- any response status counts as
 #     "up", useful when the check target is a restrictive network's own
-#     gateway IP rather than a real internet endpoint). All three must pass.
+#     gateway IP rather than a real internet endpoint).
+#   - Ping and DNS are the link-level checks: either failing is a failure.
+#     HTTP failing alone (ping + DNS fine) is only a warning -- a driver
+#     reload can't fix an upstream/firewall problem, and reload loops drop
+#     the client from the AP every cycle. HTTP_CHECK_URL empty = skip HTTP.
 #   - On failure: wait 10s, retry the whole battery, up to RETRY_COUNT times.
 #   - If still failing: try a scoped wifi-only fix (disconnect + reload wifi
 #     driver module + reconnect). If that doesn't recover it, escalate to a
 #     full fix (stop NetworkManager, reload module, start NetworkManager).
 #   - If the fix doesn't recover connectivity, increment a persistent
 #     consecutive-failure counter; after REBOOT_THRESHOLD consecutive failed
-#     fix cycles, reboot as a last resort.
+#     fix cycles, reboot as a last resort -- at most REBOOT_MAX_PER_DAY times
+#     per 24h, after that it only logs (a reboot that doesn't fix anything
+#     must not repeat forever).
+#   - Every run compares the configured GATEWAY_IP with the live default
+#     route on the wifi iface and warns on mismatch (stale config after
+#     moving networks). It never rewrites the config on its own; use
+#     --rediscover.
 #   - Detailed step-by-step output goes to a log file (for pulling the SD
 #     card later). High-level pass/fail goes to syslog every run. Any
 #     restart/reload/reboot action is logged loudly to syslog (warning/err/
@@ -47,6 +56,7 @@ export PATH
 CONF="/etc/auto-fix-wifi.conf"
 STATE_DIR="/var/lib/auto-fix-wifi"
 FAIL_COUNT_FILE="$STATE_DIR/consecutive_fix_failures"
+REBOOT_TIMES_FILE="$STATE_DIR/reboot_epochs"
 LOG_DIR="/var/log/auto-fix-wifi"
 DETAIL_LOG="$LOG_DIR/detail.log"
 ACTIONS_LOG="$LOG_DIR/actions.log"
@@ -96,6 +106,11 @@ conf_get() {
   # with query strings) survive intact.
   [ -f "$CONF" ] || return 0
   awk -v k="$1" 'index($0, k "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$CONF"
+}
+
+conf_has() {
+  # $1 = key; true if "key=" line exists in $CONF, even with an empty value
+  [ -f "$CONF" ] && grep -q "^$1=" "$CONF"
 }
 
 conf_set() {
@@ -202,7 +217,11 @@ bootstrap_config_if_needed() {
   # Fixed defaults, only set if absent (never overwritten by --rediscover,
   # these aren't hardware-discovered, they're policy).
   [ -n "$(conf_get DNS_CHECK_NAME)" ]   || conf_set DNS_CHECK_NAME "example.com"
-  [ -n "$(conf_get HTTP_CHECK_URL)" ]   || conf_set HTTP_CHECK_URL "https://detectportal.firefox.com/success.txt"
+  # HTTP_CHECK_URL: only defaulted when the key is absent. An existing empty
+  # value means "skip the HTTP check" (isolated networks with no internet and
+  # no reachable local web endpoint). The default assumes internet access --
+  # set it to something reachable on this network segment.
+  conf_has HTTP_CHECK_URL || conf_set HTTP_CHECK_URL "https://detectportal.firefox.com/success.txt"
   [ -n "$(conf_get RETRY_COUNT)" ]      || conf_set RETRY_COUNT "3"
   [ -n "$(conf_get RETRY_WAIT)" ]       || conf_set RETRY_WAIT "10"
   [ -n "$(conf_get PING_TIMEOUT)" ]     || conf_set PING_TIMEOUT "2"
@@ -210,6 +229,7 @@ bootstrap_config_if_needed() {
   [ -n "$(conf_get MODULE_RELOAD_WAIT)" ] || conf_set MODULE_RELOAD_WAIT "5"
   [ -n "$(conf_get IFACE_WAIT_MAX)" ]   || conf_set IFACE_WAIT_MAX "15"
   [ -n "$(conf_get REBOOT_THRESHOLD)" ] || conf_set REBOOT_THRESHOLD "5"
+  [ -n "$(conf_get REBOOT_MAX_PER_DAY)" ] || conf_set REBOOT_MAX_PER_DAY "2"
 }
 
 load_config() {
@@ -226,11 +246,27 @@ load_config() {
   MODULE_RELOAD_WAIT=$(conf_get MODULE_RELOAD_WAIT)
   IFACE_WAIT_MAX=$(conf_get IFACE_WAIT_MAX)
   REBOOT_THRESHOLD=$(conf_get REBOOT_THRESHOLD)
+  REBOOT_MAX_PER_DAY=$(conf_get REBOOT_MAX_PER_DAY)
+}
+
+warn_if_gateway_stale() {
+  # Compare configured gateway to the live default route on the wifi iface.
+  # Warn only: auto-rewriting config could mask a real routing problem.
+  live_gw=$(discover_gateway "$WIFI_IFACE")
+  if [ -n "$live_gw" ] && [ "$live_gw" != "$GATEWAY_IP" ]; then
+    log_syslog warning "configured GATEWAY_IP ($GATEWAY_IP) differs from live default route on $WIFI_IFACE ($live_gw); config may be stale, run auto-fix-wifi.sh --rediscover"
+    log_detail "WARNING: configured GATEWAY_IP=$GATEWAY_IP differs from live gateway $live_gw on $WIFI_IFACE (stale config? --rediscover)"
+  fi
 }
 
 # ---------------------------------------------------------------------------
 # checks
 # ---------------------------------------------------------------------------
+
+# Per-check results from the last run_cycle: ok | FAIL | skipped
+PING_RES=""
+DNS_RES=""
+HTTP_RES=""
 
 check_ping() {
   if [ -z "$GATEWAY_IP" ]; then
@@ -272,6 +308,10 @@ check_dns() {
 }
 
 check_http() {
+  if [ -z "$HTTP_CHECK_URL" ]; then
+    log_detail "http check: skipped, HTTP_CHECK_URL empty"
+    return 2
+  fi
   if ! command -v curl >/dev/null 2>&1; then
     log_detail "http check: skipped, curl not installed"
     return 1
@@ -304,13 +344,22 @@ check_http() {
 }
 
 run_cycle() {
-  # Whole battery; all three must pass. Logs each sub-check regardless.
+  # Whole battery, every sub-check logged regardless. Ping + DNS are the
+  # link-level checks and must pass; HTTP failing alone is only a warning
+  # (see header). Sets PING_RES/DNS_RES/HTTP_RES for the caller's log lines.
+  # (if/else rather than `check || rc=$?`: keeps set -e from tripping)
   ok=1
-  check_ping || ok=0
-  check_dns  || ok=0
-  check_http || ok=0
+  if check_ping; then PING_RES=ok; else PING_RES=FAIL; ok=0; fi
+  if check_dns;  then DNS_RES=ok;  else DNS_RES=FAIL;  ok=0; fi
+  if check_http; then
+    HTTP_RES=ok
+  else
+    if [ "$?" = "2" ]; then HTTP_RES=skipped; else HTTP_RES=FAIL; fi
+  fi
   [ "$ok" = "1" ]
 }
+
+results() { echo "ping=$PING_RES dns=$DNS_RES http=$HTTP_RES"; }
 
 # ---------------------------------------------------------------------------
 # fix actions
@@ -331,7 +380,14 @@ reload_wifi_module() {
     log_detail "module reload: skipped, WIFI_DRIVER unknown"
     return 1
   fi
-  log_detail "module reload: modprobe -r $WIFI_DRIVER"
+  # modprobe -r refuses to unload a module that other modules still use. On
+  # brcmfmac the vendor shim (brcmfmac_cyw or brcmfmac_wcc, whichever this
+  # board loads) depends on it, so unloading only "brcmfmac" fails every
+  # time -- the exact no-op bug documented in wifi-troubleshooting-pi-zero2w.md.
+  # Read the dependents from lsmod's "Used by" column and unload them first
+  # rather than hardcoding vendor module names.
+  deps=$(lsmod | awk -v m="$WIFI_DRIVER" '$1 == m { print $4 }' | tr ',' ' ') || true
+  log_detail "module reload: $WIFI_DRIVER dependents: ${deps:-none}"
   # a couple of passes, like retry-wifi.sh -- dependent modules may take a
   # moment to free up.
   n=0
@@ -339,13 +395,28 @@ reload_wifi_module() {
     if ! lsmod | grep -q "^${WIFI_DRIVER}\b"; then
       break
     fi
+    for d in $deps; do
+      [ "$d" = "-" ] && continue
+      log_detail "module reload: modprobe -r $d"
+      modprobe -r "$d" >>"$DETAIL_LOG" 2>&1 || true
+    done
+    log_detail "module reload: modprobe -r $WIFI_DRIVER"
     modprobe -r "$WIFI_DRIVER" >>"$DETAIL_LOG" 2>&1 || true
     n=$((n + 1))
     sleep 1
   done
+  if lsmod | grep -q "^${WIFI_DRIVER}\b"; then
+    log_detail "module reload: WARNING $WIFI_DRIVER still loaded after unload attempts (still in use?)"
+  fi
   sleep "$MODULE_RELOAD_WAIT"
   log_detail "module reload: modprobe $WIFI_DRIVER"
   modprobe "$WIFI_DRIVER" >>"$DETAIL_LOG" 2>&1
+  # dependents normally come back via device match; load any that don't,
+  # best effort (a no-op if already loaded).
+  for d in $deps; do
+    [ "$d" = "-" ] && continue
+    modprobe "$d" >>"$DETAIL_LOG" 2>&1 || true
+  done
   wait_for_iface
 }
 
@@ -374,6 +445,16 @@ write_fail_count() {
   echo "$1" >"$FAIL_COUNT_FILE"
 }
 
+reboots_last_24h() {
+  # Prints how many reboots this script initiated in the last 24h; prunes older
+  # entries from $REBOOT_TIMES_FILE.
+  [ -f "$REBOOT_TIMES_FILE" ] || { echo 0; return 0; }
+  cutoff=$(( $(date +%s) - 86400 ))
+  awk -v c="$cutoff" '$1 >= c' "$REBOOT_TIMES_FILE" >"$REBOOT_TIMES_FILE.tmp" || true
+  mv "$REBOOT_TIMES_FILE.tmp" "$REBOOT_TIMES_FILE"
+  wc -l <"$REBOOT_TIMES_FILE" | tr -d ' '
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -388,6 +469,8 @@ fi
 
 bootstrap_config_if_needed
 load_config
+
+warn_if_gateway_stale
 
 log_detail "=== run start (WIFI_IFACE=$WIFI_IFACE GATEWAY_IP=$GATEWAY_IP DNS_SERVER=$DNS_SERVER WIFI_DRIVER=$WIFI_DRIVER) ==="
 
@@ -406,23 +489,28 @@ while [ "$attempt" -le "$RETRY_COUNT" ]; do
 done
 
 if [ "$passed" = "1" ]; then
-  log_syslog info "check OK ($WIFI_IFACE): ping/dns/http all passed (attempt $attempt/$RETRY_COUNT)"
+  if [ "$HTTP_RES" = "FAIL" ]; then
+    # link is fine, only the HTTP target failed: warn, do NOT touch the driver
+    log_syslog warning "check OK with warning ($WIFI_IFACE): $(results) -- link-level checks pass, HTTP target ($HTTP_CHECK_URL) failing; not attempting a fix (check HTTP_CHECK_URL is reachable from this network)"
+  else
+    log_syslog info "check OK ($WIFI_IFACE): $(results) (attempt $attempt/$RETRY_COUNT)"
+  fi
   write_fail_count 0
   exit 0
 fi
 
-log_syslog warning "check FAILED ($WIFI_IFACE): ping/dns/http did not all pass after $RETRY_COUNT attempts; attempting fix"
+log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts; attempting fix"
 
 fix_wifi_only_bounce
 if run_cycle; then
-  log_action warning "recovered via scoped wifi-only bounce on $WIFI_IFACE"
+  log_action warning "recovered via scoped wifi-only bounce on $WIFI_IFACE ($(results))"
   write_fail_count 0
   exit 0
 fi
 
 fix_full_reload
 if run_cycle; then
-  log_action err "recovered via full NetworkManager + module reload on $WIFI_IFACE (wifi-only bounce was insufficient)"
+  log_action err "recovered via full NetworkManager + module reload on $WIFI_IFACE (wifi-only bounce was insufficient; $(results))"
   write_fail_count 0
   exit 0
 fi
@@ -430,12 +518,19 @@ fi
 fail_count=$(read_fail_count)
 fail_count=$((fail_count + 1))
 write_fail_count "$fail_count"
-log_action err "fix did not recover connectivity; consecutive failed fix cycles: $fail_count/$REBOOT_THRESHOLD"
+log_action err "fix did not recover connectivity ($(results)); consecutive failed fix cycles: $fail_count/$REBOOT_THRESHOLD"
 
 if [ "$fail_count" -ge "$REBOOT_THRESHOLD" ]; then
-  log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles; rebooting as last resort"
-  write_fail_count 0
-  reboot
+  recent=$(reboots_last_24h)
+  if [ "$recent" -ge "$REBOOT_MAX_PER_DAY" ]; then
+    # a reboot that didn't help last time won't help now; stop and just log
+    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but already rebooted $recent times in 24h (max $REBOOT_MAX_PER_DAY); NOT rebooting, needs human attention"
+  else
+    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)); rebooting as last resort (reboot $((recent + 1))/$REBOOT_MAX_PER_DAY in 24h)"
+    date +%s >>"$REBOOT_TIMES_FILE"
+    write_fail_count 0
+    reboot
+  fi
 fi
 
 exit 1

@@ -31,14 +31,22 @@ dongle like `rtl8192cu`) always-on wifi health check, meant to run from root's
 cron periodically. It supersedes manually running the diag/retry scripts for
 *ongoing* monitoring; those scripts remain useful for one-shot manual digging.
 
-Each run: pings the gateway, does a DNS lookup, and does an HTTPS check — all
+Each run: pings the gateway, does a DNS lookup, and does an HTTP(S) check — all
 bound to the wifi interface where possible so a working `eth0` on dual-NIC
-boxes can't mask a dead wifi link. If any check fails, it waits 10s and
-retries the whole battery, up to 3 times. If it's still down, it tries a
-scoped wifi-only fix (disconnect + reload the wifi driver module + reconnect)
-before escalating to a full fix (stop NetworkManager, reload the module,
-start NetworkManager). If the fix doesn't recover connectivity for 5
-consecutive cron cycles (configurable), it reboots as a last resort.
+boxes can't mask a dead wifi link. Ping and DNS are the link-level checks; if
+either fails, it waits 10s and retries the whole battery, up to 3 times. If
+it's still down, it tries a scoped wifi-only fix (disconnect + reload the wifi
+driver module + reconnect) before escalating to a full fix (stop
+NetworkManager, reload the module, start NetworkManager). If the fix doesn't
+recover connectivity for 5 consecutive cron cycles (configurable), it reboots
+as a last resort, at most twice per 24h (`REBOOT_MAX_PER_DAY`), then only logs.
+
+An HTTP-only failure (ping + DNS fine) is just a warning in syslog — no driver
+reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to
+something reachable from the network the Pi is on (the default assumes internet
+access; isolated VLANs have none), or leave it empty to skip the HTTP check.
+Each run also warns if the configured `GATEWAY_IP` differs from the live
+default route (stale config after moving networks); fix with `--rediscover`.
 
 **First run auto-bootstraps** `/etc/auto-fix-wifi.conf` — discovers the wifi
 interface, gateway IP, DNS server, and wifi driver module name, and fills in
@@ -50,11 +58,10 @@ edited in the conf file afterwards and won't be overwritten.
 **Install:**
 
 ```bash
-sudo cp auto-fix-wifi.sh /usr/local/sbin/auto-fix-wifi.sh
-sudo chmod +x /usr/local/sbin/auto-fix-wifi.sh
-sudo cp auto-fix-wifi.cron /etc/cron.d/auto-fix-wifi
-sudo cp auto-fix-wifi.logrotate /etc/logrotate.d/auto-fix-wifi
+./install.sh   # needs sudo; installs script + cron + logrotate, runs first bootstrap
 ```
+
+Then review `/etc/auto-fix-wifi.conf` (especially `HTTP_CHECK_URL`).
 
 **Logs:**
 
