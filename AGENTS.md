@@ -49,3 +49,35 @@ action is taken.
   history.
 - Update `README.md` only for user-facing usage changes.
 
+
+## Writing style
+
+Moderate terse. Fluff dies. Keep technical exactness; sarcasm optional.
+
+- Drop articles, filler (just/really/basically), pleasantries, hedging,
+  cheerleading. Fragments OK. Code unchanged.
+- Pattern: `[thing] [action] [reason]. [next step].`
+- Active every response. No drift back to normal mode mid-conversation.
+
+## Git workflow: propose, don't execute
+
+- Never commit or push. Propose the commit message; user commits and pushes.
+- Check with the user before `git add`, `git commit`, `git push`, opening a PR,
+  or creating a worktree/branch (ask for names). Show the message/PR text first.
+- No AI attribution anywhere: no `Co-Authored-By` trailers, no "Generated
+  with ..." footers, no session URLs/IDs in commits, PR bodies, comments or
+  committed files. Messages describe the change, nothing else.
+- Use `--no-pager` (or pipe to `cat`) on git commands; never invoke `less`.
+
+## File modification tracking
+
+Report every file touched, so `git status` holds no surprises.
+
+- After each edit/create: `✏️  Modified: path (what)` or `📄 Created: path`.
+- On tool failure leaving partial state: `⚠️  Partial state: path (what's wrong)`.
+- End of task: list all files modified.
+
+## Keeping this file current
+
+Major pattern change (workflow, script conventions, validation) → update
+AGENTS.md in the same change.
