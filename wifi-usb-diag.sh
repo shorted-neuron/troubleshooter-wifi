@@ -97,9 +97,13 @@ missing() { echo "$1 not installed, skipping"; }
   echo "=== dmesg (USB + wifi/net relevant) ==="
   if have dmesg; then
     # no pipe-masked exit status: capture first so a dmesg failure (e.g.
-    # dmesg_restrict as non-root) is reported with its real error
-    dmesg_out=$(dmesg -T 2>&1) || echo "[exit $? from: dmesg -T] $dmesg_out"
-    printf '%s\n' "$dmesg_out" | grep -Ei 'usb|wlan|wifi|cfg80211|mac80211|firmware|link is|carrier|eth|rndis|asix|smsc|r8152' | tail -n 300 || true
+    # dmesg_restrict as non-root) is reported with its real error and not
+    # run through the filter
+    if dmesg_out=$(dmesg -T 2>&1); then
+      printf '%s\n' "$dmesg_out" | grep -Ei 'usb|wlan|wifi|cfg80211|mac80211|firmware|link is|carrier|eth|rndis|asix|smsc|r8152' | tail -n 300 || true
+    else
+      echo "[exit $? from: dmesg -T] $dmesg_out"
+    fi
   else
     missing dmesg
   fi
