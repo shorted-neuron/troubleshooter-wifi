@@ -1,0 +1,12 @@
+/var/log/auto-fix-wifi/detail.log
+/var/log/auto-fix-wifi/actions.log
+/var/log/auto-fix-wifi/cron.log
+{
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+

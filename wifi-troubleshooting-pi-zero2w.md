@@ -129,6 +129,34 @@ bookending it, not any actual driver/firmware reset.
 **Fixed** in this session — script now unloads both `brcmfmac_cyw` and `brcmfmac_wcc`
 (covers either chip variant across kernel/board revisions).
 
+**Same bug, found again in `auto-fix-wifi.sh`** (2026-10-06 review): it discovers
+`WIFI_DRIVER` from the interface's driver symlink, which is `brcmfmac`, so a plain
+`modprobe -r brcmfmac` hit the same dependent-module wall. Fixed by reading the
+module's dependents from `lsmod`'s "Used by" column and unloading those first, then
+the driver (no hardcoded `brcmfmac_cyw`/`brcmfmac_wcc` names), then reloading.
+
+## Incident — `auto-fix-wifi.sh` reboot loop from a false HTTP failure
+
+Two Zero 2W units on isolated VLANs (`pi-zero-1` and a second unit) rebooted every
+~50 min (and ~8 min on the second) for about two days while wifi was healthy
+(strong signal, normal link rate, ping and DNS passing).
+
+- **Cause:** `HTTP_CHECK_URL` pointed at a host the VLAN is firewalled from. The old
+  logic required ping + DNS + HTTP all to pass, so every run went wifi-only bounce ->
+  full NetworkManager/module reload -> `consecutive failed fix cycles: N/5` -> reboot.
+  A reboot can't fix a firewall, so it repeated forever, and each bounce looked like a
+  reconnect storm to the AP.
+- **Compounding:** `GATEWAY_IP` and the HTTP target are bootstrapped once and never
+  re-checked, so they went stale when network/gateway services changed.
+- **Fixes in the script:** HTTP-only failure is now a syslog warning, not a fix
+  trigger; empty `HTTP_CHECK_URL` skips the HTTP check; reboots capped at
+  `REBOOT_MAX_PER_DAY` (default 2) per 24h, then log-only; each run warns when the
+  configured gateway differs from the live default route; failure/recovery/reboot
+  log lines now include `ping=… dns=… http=…`.
+- **Diagnostic pattern:** `ping=ok dns=ok http=FAIL` repeating = the HTTP target is
+  unreachable from this network, not a wifi problem. Pick a target reachable on that
+  segment (see README).
+
 ## Related scripts (this dir)
 
 - `wifi-brcm-diag.sh` — one-shot diagnostic dump (interfaces, rfkill, modules,

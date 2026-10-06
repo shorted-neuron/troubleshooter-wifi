@@ -17,3 +17,74 @@ journalctl -u wpa_supplicant -u NetworkManager --no-pager --since "-3 hours" \
 ```
 
 Then proceed to the [wifi-troubleshooting-pi-zero2w.md](wifi-troubleshooting-pi-zero2w.md) doc for next steps or AI help.
+
+If the Pi has **no built-in wifi** (USB wifi/ethernet dongles via a hub instead), use
+`wifi-usb-diag.sh` instead of `wifi-brcm-diag.sh` — it doesn't assume the `brcmfmac`
+chip and instead captures `lsusb`, interface-to-driver mapping, and USB-relevant
+`dmesg`. See [wifi-troubleshooting-pi-zero-usb.md](wifi-troubleshooting-pi-zero-usb.md)
+for that device class.
+
+## auto-fix-wifi.sh — always-on monitor + auto-recovery
+
+`auto-fix-wifi.sh` is a driver-agnostic (works with either `brcmfmac` or a USB
+dongle like `rtl8192cu`) always-on wifi health check, meant to run from root's
+cron periodically. It supersedes manually running the diag/retry scripts for
+*ongoing* monitoring; those scripts remain useful for one-shot manual digging.
+
+Each run: pings the gateway, does a DNS lookup, and does an HTTP(S) check — all
+bound to the wifi interface where possible so a working `eth0` on dual-NIC
+boxes can't mask a dead wifi link. Ping and DNS are the link-level checks; if
+either fails, it waits 10s and retries the whole battery, up to 3 times. If
+it's still down, it tries a scoped wifi-only fix (disconnect + reload the wifi
+driver module + reconnect) before escalating to a full fix (stop
+NetworkManager, reload the module, start NetworkManager). If the fix doesn't
+recover connectivity for 5 consecutive cron cycles (configurable), it reboots
+as a last resort, at most twice per 24h (`REBOOT_MAX_PER_DAY`), then only logs.
+
+An HTTP-only failure (ping + DNS fine) is just a warning in syslog — no driver
+reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to
+something reachable from the network the Pi is on (the default assumes internet
+access; isolated VLANs have none), or leave it empty to skip the HTTP check.
+Each run also warns if the configured `GATEWAY_IP` differs from the live
+default route (stale config after moving networks); fix with `--rediscover`.
+
+**First run auto-bootstraps** `/etc/auto-fix-wifi.conf` — discovers the wifi
+interface, gateway IP, DNS server, and wifi driver module name, and fills in
+sane defaults for check targets/timings. Re-run with `--rediscover` to force
+re-discovery of hardware-specific values (e.g. after swapping a USB dongle).
+Policy settings (check targets, retry counts, reboot threshold) can be hand-
+edited in the conf file afterwards and won't be overwritten.
+
+**Install:**
+
+```bash
+./install.sh   # needs sudo; installs script + cron + logrotate, runs first bootstrap
+```
+
+Then review `/etc/auto-fix-wifi.conf` (especially `HTTP_CHECK_URL`). Install `dig`
+too (`sudo apt install dnsutils`, or `bind9-dnsutils`): it lets the DNS check bind to
+the wifi interface. Without it the check falls back to the system resolver, which on
+a dual-NIC box may answer over `eth0`.
+
+**Logs:**
+
+- `/var/log/auto-fix-wifi/detail.log` — full step-by-step output of every
+  check, every run (for pulling off the SD card later).
+- High-level pass/fail is logged to syslog every run (`logger -t auto-fix-wifi`).
+- Any restart/reload/reboot action is logged loudly to syslog
+  (`warning`/`err`/`crit`) **and** to `/var/log/auto-fix-wifi/actions.log`, so
+  you can `tail -f` just that file to see intervention history at a glance.
+
+**Reading the detail log — a useful diagnostic pattern:** ping (gateway) and
+DNS checks are inherently weak signals on their own — the gateway is LAN-local
+by definition, and the discovered DNS server may itself be reachable purely
+over LAN routing even when the network's WAN/internet uplink is down (seen in
+practice on a dual-subnet box: DNS resolved fine over wifi because the
+resolver was reachable LAN-side, but the HTTPS check correctly failed because
+wifi's subnet had no working internet route). If you see `ping check: OK` and
+`dns check: OK` but `http check: FAILED` repeatedly, that's a strong hint the
+problem is upstream (the AP/router isn't routing this client to the internet
+— client isolation, a guest/IoT VLAN with no WAN uplink, or an ISP gateway
+requiring device approval) rather than anything fixable by reloading the
+wifi driver on the Pi itself.
+
