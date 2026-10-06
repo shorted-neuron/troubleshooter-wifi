@@ -40,7 +40,17 @@ $SUDO "$BIN" || true
 # monitor (no fix/reboot), but it's better caught here than in syslog later.
 conf_val() {
   [ -f "$CONF" ] || return 0
-  awk -v k="$1" 'index($0, k "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$CONF"
+  # same literal-read semantics as auto-fix-wifi.sh's conf_get: one pair of
+  # surrounding quotes and trailing CR/whitespace stripped
+  awk -v k="$1" 'index($0, k "=") == 1 {
+      v = $0; sub(/^[^=]*=/, "", v)
+      gsub(/\r/, "", v); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+      if (length(v) >= 2) {
+        f = substr(v, 1, 1); l = substr(v, length(v))
+        if ((f == "\"" && l == "\"") || (f == "\047" && l == "\047")) v = substr(v, 2, length(v) - 2)
+      }
+      print v; exit
+    }' "$CONF"
 }
 HTTP_URL=$(conf_val HTTP_CHECK_URL)
 WIFI_IF=$(conf_val WIFI_IFACE)
@@ -51,7 +61,7 @@ elif ! command -v curl >/dev/null 2>&1; then
 else
   echo "Testing HTTP_CHECK_URL ($HTTP_URL) via ${WIFI_IF:-default route}..."
   # same semantics as the monitor: any HTTP response counts, no redirect following
-  if code=$(curl ${WIFI_IF:+--interface "$WIFI_IF"} -sS --max-time 10 -o /dev/null -w '%{http_code}' "$HTTP_URL"); then
+  if code=$(curl ${WIFI_IF:+--interface "$WIFI_IF"} -g -sS --max-time 10 -o /dev/null -w '%{http_code}' "$HTTP_URL"); then
     echo "  OK (HTTP status $code)"
   else
     echo "WARNING: HTTP_CHECK_URL is not reachable from this network (curl error above)." >&2

@@ -53,7 +53,10 @@ interface, gateway IP, DNS server, and wifi driver module name, and fills in
 sane defaults for check targets/timings. Re-run with `--rediscover` to force
 re-discovery of hardware-specific values (e.g. after swapping a USB dongle).
 Policy settings (check targets, retry counts, reboot threshold) can be hand-
-edited in the conf file afterwards and won't be overwritten.
+edited in the conf file afterwards and won't be overwritten. The conf is plain
+`KEY=value`, read literally (not sourced by a shell): write values bare, e.g.
+`HTTP_CHECK_URL=https://example.invalid/path?a=1&b=2`, with no backslash escaping.
+One pair of surrounding quotes and trailing whitespace/CR are tolerated and stripped.
 
 **Install:**
 

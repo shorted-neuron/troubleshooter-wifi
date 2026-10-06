@@ -103,9 +103,21 @@ ensure_dirs() {
 conf_get() {
   # $1 = key; prints value from $CONF if present, else empty.
   # Strips only the first "key=" prefix so values containing "=" (e.g. URLs
-  # with query strings) survive intact.
+  # with query strings) survive intact. The conf is read literally, NOT
+  # sourced by a shell, so quoting/escaping isn't interpreted: tolerate the
+  # natural KEY="value" / KEY='value' style by stripping one pair of matching
+  # surrounding quotes, plus trailing CR/whitespace (stray quotes, CRLF line
+  # endings and trailing spaces all make curl reject the URL).
   [ -f "$CONF" ] || return 0
-  awk -v k="$1" 'index($0, k "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$CONF"
+  awk -v k="$1" 'index($0, k "=") == 1 {
+      v = $0; sub(/^[^=]*=/, "", v)
+      gsub(/\r/, "", v); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+      if (length(v) >= 2) {
+        f = substr(v, 1, 1); l = substr(v, length(v))
+        if ((f == "\"" && l == "\"") || (f == "\047" && l == "\047")) v = substr(v, 2, length(v) - 2)
+      }
+      print v; exit
+    }' "$CONF"
 }
 
 conf_has() {
@@ -193,7 +205,15 @@ discover_wifi_driver() {
 
 bootstrap_config_if_needed() {
   ensure_dirs
-  [ -f "$CONF" ] || : >"$CONF"
+  if [ ! -f "$CONF" ]; then
+    cat >"$CONF" <<'EOF'
+# auto-fix-wifi.conf -- plain KEY=value, read literally (NOT sourced by a shell):
+# no escaping or variable expansion. Write values bare, e.g.
+#   HTTP_CHECK_URL=https://example.invalid/path?a=1&b=2
+# One pair of surrounding quotes is tolerated and stripped. Empty HTTP_CHECK_URL
+# skips the HTTP check.
+EOF
+  fi
 
   cur_iface=$(conf_get WIFI_IFACE)
   if [ "$REDISCOVER" = "1" ] || [ -z "$cur_iface" ]; then
@@ -350,7 +370,7 @@ check_http() {
   # (the "if" here is deliberate -- with `set -e`, a bare
   # `http_code=$(cmd)` assignment would abort the script on curl's nonzero
   # exit instead of letting us handle it)
-  if http_code=$(curl --interface "$WIFI_IFACE" -sS --max-time "$HTTP_TIMEOUT" \
+  if http_code=$(curl --interface "$WIFI_IFACE" -g -sS --max-time "$HTTP_TIMEOUT" \
       -o /dev/null -w '%{http_code}' "$HTTP_CHECK_URL" 2>>"$DETAIL_LOG"); then
     rc=0
   else
