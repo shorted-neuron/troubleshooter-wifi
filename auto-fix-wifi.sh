@@ -174,9 +174,18 @@ discover_dns_server() {
 
 discover_wifi_driver() {
   # $1 = wifi iface
+  # device/driver -> /sys/bus/<bus>/drivers/<driver name>. The driver name
+  # usually equals the module name but isn't guaranteed to; the driver dir's
+  # "module" symlink -> /sys/module/<modname> is exact, when present (absent
+  # for built-in drivers), so prefer it and fall back to the driver name.
   drv_path="/sys/class/net/$1/device/driver"
   if [ -e "$drv_path" ]; then
-    basename "$(readlink -f "$drv_path")"
+    drv_dir=$(readlink -f "$drv_path")
+    if [ -L "$drv_dir/module" ]; then
+      basename "$(readlink -f "$drv_dir/module")"
+    else
+      basename "$drv_dir"
+    fi
   else
     echo ""
   fi
@@ -284,8 +293,14 @@ check_ping() {
 
 check_dns() {
   if command -v dig >/dev/null 2>&1; then
-    src_ip=$(ip -4 -o addr show "$WIFI_IFACE" 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
-    if [ -n "${src_ip:-}" ] && [ -n "$DNS_SERVER" ]; then
+    src_ip=$(ip -4 -o addr show "$WIFI_IFACE" 2>>"$DETAIL_LOG" | awk '{print $4}' | cut -d/ -f1 | head -1) || true
+    if [ -z "${src_ip:-}" ]; then
+      # no IPv4 on the wifi iface IS a wifi failure; don't fall back to the
+      # system resolver, which could answer over eth0 and look healthy
+      log_detail "dns check: FAILED ($WIFI_IFACE has no IPv4 address)"
+      return 1
+    fi
+    if [ -n "$DNS_SERVER" ]; then
       if dig -b "$src_ip" "@$DNS_SERVER" +time=3 +tries=1 +short "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1; then
         log_detail "dns check: OK (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip)"
         return 0
@@ -296,8 +311,10 @@ check_dns() {
     fi
   fi
   # Fallback: system resolver, NOT guaranteed to go out $WIFI_IFACE if
-  # another interface (e.g. eth0) is also up with a default route.
-  log_detail "dns check: falling back to system resolver (getent) -- not interface-bound, dig unavailable or no wifi IP yet"
+  # another interface (e.g. eth0) is also up with a default route. Only
+  # reached when dig is missing or DNS_SERVER is empty. The ping check is
+  # interface-bound and still covers the link itself.
+  log_detail "dns check: WARNING falling back to system resolver (getent), NOT interface-bound: dig not installed (install dnsutils/bind9-dnsutils) or DNS_SERVER empty"
   if getent hosts "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1; then
     log_detail "dns check: OK (getent $DNS_CHECK_NAME)"
     return 0

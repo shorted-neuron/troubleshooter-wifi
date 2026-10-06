@@ -61,7 +61,10 @@ edited in the conf file afterwards and won't be overwritten.
 ./install.sh   # needs sudo; installs script + cron + logrotate, runs first bootstrap
 ```
 
-Then review `/etc/auto-fix-wifi.conf` (especially `HTTP_CHECK_URL`).
+Then review `/etc/auto-fix-wifi.conf` (especially `HTTP_CHECK_URL`). Install `dig`
+too (`sudo apt install dnsutils`, or `bind9-dnsutils`): it lets the DNS check bind to
+the wifi interface. Without it the check falls back to the system resolver, which on
+a dual-NIC box may answer over `eth0`.
 
 **Logs:**
 

@@ -26,6 +26,12 @@ $SUDO install -m 0644 "$SRC_DIR/auto-fix-wifi.cron" "$CRON"
 echo "Installing $LOGROTATE"
 $SUDO install -m 0644 "$SRC_DIR/auto-fix-wifi.logrotate" "$LOGROTATE"
 
+if ! command -v dig >/dev/null 2>&1; then
+  echo "WARNING: dig not found. Without it the DNS check can't be bound to the wifi" >&2
+  echo "interface and falls back to the system resolver (could answer over eth0)." >&2
+  echo "Install it: sudo apt install dnsutils  (bind9-dnsutils on newer releases)" >&2
+fi
+
 echo "Running first-time bootstrap (discovers iface/gateway/DNS/driver)..."
 $SUDO "$BIN" || true
 
