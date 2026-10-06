@@ -35,6 +35,31 @@ fi
 echo "Running first-time bootstrap (discovers iface/gateway/DNS/driver)..."
 $SUDO "$BIN" || true
 
+# Validate HTTP_CHECK_URL now: the default assumes internet access, which an
+# isolated network doesn't have. A bad target is only an advisory in the
+# monitor (no fix/reboot), but it's better caught here than in syslog later.
+conf_val() {
+  [ -f "$CONF" ] || return 0
+  awk -v k="$1" 'index($0, k "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$CONF"
+}
+HTTP_URL=$(conf_val HTTP_CHECK_URL)
+WIFI_IF=$(conf_val WIFI_IFACE)
+if [ -z "$HTTP_URL" ]; then
+  echo "HTTP check: disabled (HTTP_CHECK_URL is empty)."
+elif ! command -v curl >/dev/null 2>&1; then
+  echo "WARNING: curl not found; the HTTP check can't run and can't be validated." >&2
+else
+  echo "Testing HTTP_CHECK_URL ($HTTP_URL) via ${WIFI_IF:-default route}..."
+  # same semantics as the monitor: any HTTP response counts, no redirect following
+  if code=$(curl ${WIFI_IF:+--interface "$WIFI_IF"} -sS --max-time 10 -o /dev/null -w '%{http_code}' "$HTTP_URL"); then
+    echo "  OK (HTTP status $code)"
+  else
+    echo "WARNING: HTTP_CHECK_URL is not reachable from this network (curl error above)." >&2
+    echo "  The monitor will log a warning on every run (it won't reload drivers or reboot for this)." >&2
+    echo "  Set HTTP_CHECK_URL in $CONF to something reachable here, or leave it empty to skip." >&2
+  fi
+fi
+
 echo
 echo "Done. Config file: $CONF"
 echo "Review/edit it (check targets, retry counts, reboot threshold), e.g.:"

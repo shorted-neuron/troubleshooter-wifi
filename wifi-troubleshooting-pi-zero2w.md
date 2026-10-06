@@ -153,6 +153,9 @@ Two Zero 2W units on isolated VLANs (`pi-zero-1` and a second unit) rebooted eve
   `REBOOT_MAX_PER_DAY` (default 2) per 24h, then log-only; each run warns when the
   configured gateway differs from the live default route; failure/recovery/reboot
   log lines now include `ping=… dns=… http=…`.
+  (Follow-up: the cap was renamed `MAX_REBOOTS_PER_HOUR`, default 1, applied by the
+  script even when absent from the conf; `install.sh` now test-fetches the configured
+  `HTTP_CHECK_URL` and warns if it's unreachable.)
 - **Diagnostic pattern:** `ping=ok dns=ok http=FAIL` repeating = the HTTP target is
   unreachable from this network, not a wifi problem. Pick a target reachable on that
   segment (see README).

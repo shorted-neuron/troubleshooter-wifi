@@ -31,8 +31,8 @@
 #     full fix (stop NetworkManager, reload module, start NetworkManager).
 #   - If the fix doesn't recover connectivity, increment a persistent
 #     consecutive-failure counter; after REBOOT_THRESHOLD consecutive failed
-#     fix cycles, reboot as a last resort -- at most REBOOT_MAX_PER_DAY times
-#     per 24h, after that it only logs (a reboot that doesn't fix anything
+#     fix cycles, reboot as a last resort -- at most MAX_REBOOTS_PER_HOUR
+#     times per hour (default 1), after that it only logs (a reboot that doesn't fix anything
 #     must not repeat forever).
 #   - Every run compares the configured GATEWAY_IP with the live default
 #     route on the wifi iface and warns on mismatch (stale config after
@@ -238,7 +238,7 @@ bootstrap_config_if_needed() {
   [ -n "$(conf_get MODULE_RELOAD_WAIT)" ] || conf_set MODULE_RELOAD_WAIT "5"
   [ -n "$(conf_get IFACE_WAIT_MAX)" ]   || conf_set IFACE_WAIT_MAX "15"
   [ -n "$(conf_get REBOOT_THRESHOLD)" ] || conf_set REBOOT_THRESHOLD "5"
-  [ -n "$(conf_get REBOOT_MAX_PER_DAY)" ] || conf_set REBOOT_MAX_PER_DAY "2"
+  [ -n "$(conf_get MAX_REBOOTS_PER_HOUR)" ] || conf_set MAX_REBOOTS_PER_HOUR "1"
 }
 
 load_config() {
@@ -255,7 +255,12 @@ load_config() {
   MODULE_RELOAD_WAIT=$(conf_get MODULE_RELOAD_WAIT)
   IFACE_WAIT_MAX=$(conf_get IFACE_WAIT_MAX)
   REBOOT_THRESHOLD=$(conf_get REBOOT_THRESHOLD)
-  REBOOT_MAX_PER_DAY=$(conf_get REBOOT_MAX_PER_DAY)
+  # Built-in default applies even if the key is missing/empty/non-numeric in
+  # the conf (e.g. a conf hand-edited or created before this setting existed).
+  MAX_REBOOTS_PER_HOUR=$(conf_get MAX_REBOOTS_PER_HOUR)
+  case "$MAX_REBOOTS_PER_HOUR" in
+    ''|*[!0-9]*) MAX_REBOOTS_PER_HOUR=1 ;;
+  esac
 }
 
 warn_if_gateway_stale() {
@@ -462,11 +467,11 @@ write_fail_count() {
   echo "$1" >"$FAIL_COUNT_FILE"
 }
 
-reboots_last_24h() {
-  # Prints how many reboots this script initiated in the last 24h; prunes older
+reboots_last_hour() {
+  # Prints how many reboots this script initiated in the last hour; prunes older
   # entries from $REBOOT_TIMES_FILE.
   [ -f "$REBOOT_TIMES_FILE" ] || { echo 0; return 0; }
-  cutoff=$(( $(date +%s) - 86400 ))
+  cutoff=$(( $(date +%s) - 3600 ))
   awk -v c="$cutoff" '$1 >= c' "$REBOOT_TIMES_FILE" >"$REBOOT_TIMES_FILE.tmp" || true
   mv "$REBOOT_TIMES_FILE.tmp" "$REBOOT_TIMES_FILE"
   wc -l <"$REBOOT_TIMES_FILE" | tr -d ' '
@@ -538,12 +543,12 @@ write_fail_count "$fail_count"
 log_action err "fix did not recover connectivity ($(results)); consecutive failed fix cycles: $fail_count/$REBOOT_THRESHOLD"
 
 if [ "$fail_count" -ge "$REBOOT_THRESHOLD" ]; then
-  recent=$(reboots_last_24h)
-  if [ "$recent" -ge "$REBOOT_MAX_PER_DAY" ]; then
+  recent=$(reboots_last_hour)
+  if [ "$recent" -ge "$MAX_REBOOTS_PER_HOUR" ]; then
     # a reboot that didn't help last time won't help now; stop and just log
-    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but already rebooted $recent times in 24h (max $REBOOT_MAX_PER_DAY); NOT rebooting, needs human attention"
+    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but already rebooted $recent times in the last hour (max $MAX_REBOOTS_PER_HOUR); NOT rebooting, needs human attention"
   else
-    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)); rebooting as last resort (reboot $((recent + 1))/$REBOOT_MAX_PER_DAY in 24h)"
+    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)); rebooting as last resort (reboot $((recent + 1))/$MAX_REBOOTS_PER_HOUR this hour)"
     date +%s >>"$REBOOT_TIMES_FILE"
     write_fail_count 0
     reboot

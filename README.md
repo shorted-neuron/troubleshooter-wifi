@@ -39,7 +39,7 @@ it's still down, it tries a scoped wifi-only fix (disconnect + reload the wifi
 driver module + reconnect) before escalating to a full fix (stop
 NetworkManager, reload the module, start NetworkManager). If the fix doesn't
 recover connectivity for 5 consecutive cron cycles (configurable), it reboots
-as a last resort, at most twice per 24h (`REBOOT_MAX_PER_DAY`), then only logs.
+as a last resort, at most once per hour (`MAX_REBOOTS_PER_HOUR`, default 1, applies even if absent from the conf), then only logs until the hour is up.
 
 An HTTP-only failure (ping + DNS fine) is just a warning in syslog — no driver
 reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to
