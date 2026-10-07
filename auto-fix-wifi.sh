@@ -703,7 +703,7 @@ if ! flock -n 9; then
   log_detail "another instance is still running; exiting"
   if [ "$MODE" != "run" ]; then
     echo "another auto-fix-wifi instance is running; try again in a moment" >&2
-    exit 1
+    exit 3
   fi
   exit 0
 fi

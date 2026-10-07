@@ -24,6 +24,11 @@
 # '/usr/local/sbin/auto-fix-wifi.sh --reconfigure' by hand does the same thing.
 # Neither mode runs the monitor's fix/reboot path: they end with a check-only
 # pass that prints the ping/dns/http results.
+#
+# Exit status: 0 on success. If the delegated auto-fix-wifi.sh exits nonzero,
+# this script finishes its output and exits with that same status (2 = bad
+# arguments such as an invalid --http-url, 1 = a link-level check failed,
+# anything else = unexpected failure). The files are installed in every case.
 set -eu
 
 usage() {
@@ -85,10 +90,12 @@ else
   echo "Upgrading: $BIN --check (keeps your conf, fills in any missing settings)"
   set -- --check
 fi
-# a nonzero exit here means a check failed or the args were rejected; the
-# script has already printed why, and the files above are installed either way
-if ! $SUDO "$BIN" "$@"; then
-  echo "NOTE: $BIN reported a problem (see above)." >&2
+# the files above are installed either way; keep the delegated exit status so
+# automation can tell a rejected --http-url or a failing check from success
+rc=0
+$SUDO "$BIN" "$@" || rc=$?
+if [ "$rc" != "0" ]; then
+  echo "NOTE: $BIN exited $rc (see above); the files are installed." >&2
 fi
 echo "What the bootstrap changed: grep 'bootstrap:' /var/log/auto-fix-wifi/detail.log | tail"
 
@@ -98,3 +105,4 @@ echo "Review/edit it (check targets, retry counts, reboot limits), e.g.:"
 echo "  sudo \${EDITOR:-nano} $CONF"
 echo "Logs: /var/log/auto-fix-wifi/{detail.log,actions.log}"
 echo "After swapping hardware or changing networks, re-run '$0 --reconfigure'."
+exit "$rc"

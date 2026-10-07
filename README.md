@@ -85,6 +85,10 @@ the installer delegates to it, so running these by hand does the same thing:
 | `auto-fix-wifi.sh --reconfigure --http-url URL\|none` | same without the prompt; works without a terminal (ssh, scripts) |
 | `auto-fix-wifi.sh --check` | one check-only pass: prints ping/dns/http results, never fixes or reboots |
 
+The installer exits with the delegated script's status (0 ok, 2 bad arguments such as
+an invalid `--http-url`, 1 a ping/DNS check failed, 3 another instance was running);
+the files are installed in every case.
+
 On a fresh install (no conf yet) the installer runs `--reconfigure`; a plain
 `./install.sh` over an existing conf is an upgrade: it keeps your conf, fills in any
 new settings (logged as `bootstrap:` lines) and runs `--check`.
