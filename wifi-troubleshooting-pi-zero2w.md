@@ -156,7 +156,8 @@ Two Zero 2W units on isolated VLANs (`pi-zero-1` and a second unit) rebooted eve
   (Follow-up: the cap was renamed `MAX_REBOOTS_PER_DAY` (was `REBOOT_MAX_PER_DAY`), default 4, applied by the
   script even when absent from the conf; added `MIN_REBOOT_INTERVAL` (default `60m`,
   accepts `90s`/`60m`/`1h`/`1d`, any case) so reboots can't bunch up within the daily
-  cap; `install.sh` now test-fetches the configured
+  cap; `auto-fix-wifi.sh --reconfigure` (alias `--rediscover`; `install.sh` delegates to
+  it) now prompts for and test-fetches the configured
   `HTTP_CHECK_URL` and warns if it's unreachable.)
 - **Diagnostic pattern:** `ping=ok dns=ok http=FAIL` repeating = the HTTP target is
   unreachable from this network, not a wifi problem. Pick a target reachable on that

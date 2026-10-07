@@ -14,8 +14,8 @@
 #     /etc/auto-fix-wifi.conf: wifi interface, gateway IP, DNS server
 #     (defaults to the system resolver from /etc/resolv.conf, freely
 #     override-able), wifi driver module name, check targets, timings.
-#     Re-run with --rediscover to force re-bootstrapping (e.g. after
-#     swapping dongles).
+#     Re-run with --reconfigure to force re-discovery (e.g. after swapping
+#     dongles); see "Modes" below.
 #   - Each cycle: ping gateway (bound to wifi iface) + DNS lookup (against
 #     the configured DNS server) + HTTP(S) check (bound to wifi iface where
 #     possible, redirects never followed -- any response status counts as
@@ -45,6 +45,22 @@
 #     restart/reload/reboot action is logged loudly to syslog (warning/err/
 #     crit) AND to a dedicated actions log file.
 #
+# Modes (all configuration lives here; install.sh only installs files and
+# delegates to these):
+#   (no args)          the monitor: run from cron.
+#   --reconfigure      configure-only, never fixes/reboots: re-discover iface/
+#                      gateway/DNS/driver, fill in any missing settings, ask
+#                      for the HTTP check URL (only when stdin is a terminal;
+#                      default = the current URL, else $DEFAULT_HTTP_URL),
+#                      then one check-only pass that prints the results.
+#                      --rediscover is an alias.
+#   --http-url URL     with --reconfigure: set HTTP_CHECK_URL without
+#                      prompting. URL is http(s)://..., or "none" to skip the
+#                      HTTP check. Works without a terminal.
+#   --check            one check-only pass (ping/dns/http), prints results,
+#                      never fixes or reboots.
+#   -h, --help         usage.
+#
 # Must run as root (module unload/reload, nmcli, systemctl, reboot).
 
 set -eu
@@ -65,9 +81,41 @@ ACTIONS_LOG="$LOG_DIR/actions.log"
 LOCKFILE="/var/run/auto-fix-wifi.lock"
 TAG="auto-fix-wifi"
 
+# default HTTP check target on a fresh install (no path or params)
+DEFAULT_HTTP_URL="https://api.ipify.org/"
+
+usage() {
+  cat <<EOF
+usage: $0 [--reconfigure [--http-url URL|none] | --check]
+  (no args)                  run the monitor (cron)
+  --reconfigure              re-discover iface/gateway/DNS/driver, fill in missing
+                             settings, ask for the HTTP check URL, then one
+                             check-only pass. --rediscover is an alias.
+  --http-url URL|none        with --reconfigure: set the HTTP check URL without
+                             prompting (none = skip the HTTP check)
+  --check                    one check-only pass; never fixes or reboots
+EOF
+}
+
+MODE=run            # run | reconfigure | check
 REDISCOVER=0
-if [ "${1:-}" = "--rediscover" ]; then
-  REDISCOVER=1
+HTTP_URL_ARG=""
+HTTP_URL_ARG_SET=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --reconfigure|--rediscover) MODE=reconfigure; REDISCOVER=1 ;;
+    --check) [ "$MODE" = "run" ] && MODE=check ;;
+    --http-url)
+      [ "$#" -ge 2 ] || { echo "--http-url needs a value" >&2; usage >&2; exit 2; }
+      HTTP_URL_ARG="$2"; HTTP_URL_ARG_SET=1; shift ;;
+    --http-url=*) HTTP_URL_ARG="${1#--http-url=}"; HTTP_URL_ARG_SET=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+if [ "$HTTP_URL_ARG_SET" = "1" ] && [ "$MODE" != "reconfigure" ]; then
+  echo "--http-url only works with --reconfigure" >&2; usage >&2; exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -128,14 +176,19 @@ conf_has() {
 }
 
 conf_set() {
-  # $1 = key, $2 = value; append or update in $CONF
+  # $1 = key, $2 = value; append or update in $CONF. The value goes to awk via
+  # the environment, not -v (which would interpret backslash escapes) and not
+  # into a sed replacement (where & and \ are special), so any URL survives
+  # intact. cat > (not mv) keeps the conf's existing owner/mode.
   [ -f "$CONF" ] || : >"$CONF"
-  if grep -q "^$1=" "$CONF" 2>/dev/null; then
-    # in-place update (portable-ish sed -i)
-    sed -i "s#^$1=.*#$1=$2#" "$CONF"
-  else
-    printf '%s=%s\n' "$1" "$2" >>"$CONF"
-  fi
+  conf_tmp="$CONF.tmp.$$"
+  KEY="$1" VAL="$2" awk '
+    BEGIN { k = ENVIRON["KEY"]; v = ENVIRON["VAL"] }
+    index($0, k "=") == 1 && !done { print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }' "$CONF" >"$conf_tmp"
+  cat "$conf_tmp" >"$CONF"
+  rm -f "$conf_tmp"
 }
 
 discover_wifi_iface() {
@@ -266,7 +319,7 @@ EOF
   # no reachable local web endpoint). The default assumes internet access --
   # set it to something reachable on this network segment.
   if ! conf_has HTTP_CHECK_URL; then
-    conf_set HTTP_CHECK_URL "https://api.ipify.org/"   # keep in sync with install.sh
+    conf_set HTTP_CHECK_URL "$DEFAULT_HTTP_URL"
     log_detail "bootstrap: added missing default HTTP_CHECK_URL"
   fi
   conf_default RETRY_COUNT "3"
@@ -553,6 +606,93 @@ last_reboot_epoch() {
 }
 
 # ---------------------------------------------------------------------------
+# --reconfigure / --check (interactive, never fix or reboot)
+# ---------------------------------------------------------------------------
+
+valid_http_url() {
+  case "$1" in
+    *[[:space:]]*) return 1 ;;
+    http://?*|https://?*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_none() {
+  [ "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" = "none" ]
+}
+
+prompt_http_url() {
+  # $1 = default shown/accepted on Enter. Sets HTTP_CHOICE.
+  while :; do
+    printf 'HTTP check URL [%s] (Enter = accept, "none" = skip the HTTP check): ' "$1"
+    if ! IFS= read -r ans; then ans=""; echo; fi   # EOF: accept the default
+    ans=$(printf '%s' "$ans" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -z "$ans" ]; then HTTP_CHOICE="$1"; return 0; fi
+    if is_none "$ans"; then HTTP_CHOICE=""; return 0; fi
+    if valid_http_url "$ans"; then HTTP_CHOICE="$ans"; return 0; fi
+    echo "  must start with http:// or https:// with no spaces (or type none)"
+  done
+}
+
+configure_http_url() {
+  # --http-url value if given, else prompt on a terminal, else leave as is.
+  cur_url=$(conf_get HTTP_CHECK_URL)
+  # the current URL is the default when there is one; none (or an
+  # intentionally empty value) falls back to the built-in default
+  def_url="${cur_url:-$DEFAULT_HTTP_URL}"
+  if [ "$HTTP_URL_ARG_SET" = "1" ]; then
+    if is_none "$HTTP_URL_ARG"; then
+      HTTP_CHOICE=""
+    elif valid_http_url "$HTTP_URL_ARG"; then
+      HTTP_CHOICE="$HTTP_URL_ARG"
+    else
+      echo "--http-url: must start with http:// or https:// with no spaces (or none)" >&2
+      exit 2
+    fi
+  elif [ -t 0 ]; then
+    echo
+    echo "The monitor's HTTP check needs a URL reachable from the network this Pi is on."
+    echo "On an isolated network with no internet, use a local endpoint or 'none'."
+    prompt_http_url "$def_url"
+  else
+    echo "Not interactive: leaving HTTP_CHECK_URL as is (${cur_url:-empty}). Use --http-url URL|none to set it."
+    return 0
+  fi
+  if [ "$HTTP_CHOICE" != "$cur_url" ]; then
+    conf_set HTTP_CHECK_URL "$HTTP_CHOICE"
+    log_detail "reconfigure: HTTP_CHECK_URL=${HTTP_CHOICE:-(empty)}"
+    echo "HTTP_CHECK_URL set to: ${HTTP_CHOICE:-(empty, HTTP check skipped)}"
+  fi
+}
+
+check_only_pass() {
+  # One battery, no retries, no fix, no reboot, results printed. Exit status
+  # is 0 when the link-level checks (ping + DNS) pass.
+  echo
+  if ! command -v dig >/dev/null 2>&1; then
+    echo "WARNING: dig not found. Without it the DNS check can't be bound to the wifi interface and" >&2
+    echo "  falls back to the system resolver (could answer over eth0). Install it:" >&2
+    echo "  sudo apt install dnsutils  (bind9-dnsutils on newer releases)" >&2
+  fi
+  start=0
+  if [ -f "$DETAIL_LOG" ]; then start=$(wc -l <"$DETAIL_LOG"); fi
+  pass_rc=0
+  run_cycle || pass_rc=1
+  # this pass's detail lines, timestamps stripped (includes curl's own errors)
+  tail -n +"$((start + 1))" "$DETAIL_LOG" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+ //'
+  echo "Check results: $(results)"
+  if [ "$HTTP_RES" = "FAIL" ]; then
+    echo "WARNING: HTTP_CHECK_URL ($HTTP_CHECK_URL) is not reachable from this network." >&2
+    echo "  The monitor will log a warning on every run (it won't reload drivers or reboot for this)." >&2
+    echo "  Fix: $0 --reconfigure --http-url <reachable URL>   (or --http-url none to skip)" >&2
+  fi
+  if [ "$pass_rc" != "0" ]; then
+    echo "WARNING: a link-level check (ping/dns) failed. The monitor will attempt a fix on its next run." >&2
+  fi
+  return "$pass_rc"
+}
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -561,13 +701,29 @@ ensure_dirs
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
   log_detail "another instance is still running; exiting"
+  if [ "$MODE" != "run" ]; then
+    echo "another auto-fix-wifi instance is running; try again in a moment" >&2
+    exit 1
+  fi
   exit 0
 fi
 
 bootstrap_config_if_needed
 load_config
 
+if [ "$MODE" = "reconfigure" ]; then
+  configure_http_url
+  load_config          # pick up the new HTTP_CHECK_URL
+fi
+
 warn_if_gateway_stale
+
+if [ "$MODE" != "run" ]; then
+  # configure/check modes never reach the fix or reboot path below
+  rc=0
+  check_only_pass || rc=$?
+  exit "$rc"
+fi
 
 log_detail "=== run start (WIFI_IFACE=$WIFI_IFACE GATEWAY_IP=$GATEWAY_IP DNS_SERVER=$DNS_SERVER WIFI_DRIVER=$WIFI_DRIVER) ==="
 

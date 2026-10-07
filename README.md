@@ -46,16 +46,17 @@ reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to
 something reachable from the network the Pi is on (the default, `https://api.ipify.org/`,
 assumes internet access; isolated VLANs have none), or leave it empty to skip the HTTP check.
 Each run also warns if the configured `GATEWAY_IP` differs from the live
-default route (stale config after moving networks); fix with `./install.sh --reconfigure`.
+default route (stale config after moving networks); fix with `auto-fix-wifi.sh --reconfigure`.
 
 **First run auto-bootstraps** `/etc/auto-fix-wifi.conf` — discovers the wifi
 interface, gateway IP, DNS server, and wifi driver module name, and fills in
 sane defaults for check targets/timings. Every start also fills in any setting
 missing from the conf (e.g. ones added by a newer version) without touching
 existing values; what it added is logged as `bootstrap:` lines in `detail.log`.
-Re-run with `--rediscover` (or `./install.sh --reconfigure`) to force
-re-discovery of hardware-specific values (e.g. after swapping a USB dongle).
-Rediscovery never replaces a working value with an empty result (link down).
+Run `auto-fix-wifi.sh --reconfigure` (`--rediscover` is an alias; `./install.sh
+--reconfigure` runs the same thing) to force re-discovery of hardware-specific
+values (e.g. after swapping a USB dongle). Rediscovery never replaces a working
+value with an empty result (link down).
 Policy settings (check targets, retry counts, reboot threshold) can be hand-
 edited in the conf file afterwards and won't be overwritten. The conf is plain
 `KEY=value`, read literally (not sourced by a shell): write values bare, e.g.
@@ -68,24 +69,37 @@ trailing characters in `HTTP_CHECK_URL` (`cat -A /etc/auto-fix-wifi.conf` shows 
 **Install:**
 
 ```bash
-./install.sh                # needs sudo; installs script + cron + logrotate, runs bootstrap
-./install.sh --reconfigure  # same, plus re-discover iface/gateway/DNS/driver
+./install.sh                          # needs sudo; installs script + cron + logrotate
+./install.sh --reconfigure            # same, plus re-discover iface/gateway/DNS/driver
+./install.sh --http-url https://example.invalid/   # implies --reconfigure, no prompt
+./install.sh --http-url none          # ...and skip the HTTP check
 ```
 
-On a fresh install (no conf yet) and on `--reconfigure`, the installer asks for the
-**HTTP check URL** (default `https://api.ipify.org/`). Press Enter to accept, type a
-new `http(s)://` URL, or type `none` to skip the HTTP check (isolated networks with no
-internet and no reachable local endpoint). On `--reconfigure` the default shown is the
-URL already in the conf, or `https://api.ipify.org/` if there is none (or it was
-empty). The prompt only runs on a terminal; without one the conf is left as is. A plain
-`./install.sh` upgrade over an existing conf doesn't ask. Afterwards the installer
-test-fetches the chosen URL and warns if it isn't reachable.
+`install.sh` only installs files; all configuration lives in `auto-fix-wifi.sh`, and
+the installer delegates to it, so running these by hand does the same thing:
 
-Plain `./install.sh` is also the upgrade path: it keeps your conf and fills in any
-new settings. Use `--reconfigure` after swapping a dongle or moving the Pi to
-another network. It rewrites only the discovered values (`WIFI_IFACE`, `GATEWAY_IP`,
-`DNS_SERVER`, `WIFI_DRIVER`), so a hand-edited `DNS_SERVER` is replaced too; policy
-settings such as `HTTP_CHECK_URL` and the reboot limits are kept.
+| Command | Does |
+|---|---|
+| `auto-fix-wifi.sh` | the monitor (what cron runs) |
+| `auto-fix-wifi.sh --reconfigure` | re-discover iface/gateway/DNS/driver, fill in missing settings, ask for the HTTP check URL, then one check-only pass. Never fixes or reboots. `--rediscover` is an alias |
+| `auto-fix-wifi.sh --reconfigure --http-url URL\|none` | same without the prompt; works without a terminal (ssh, scripts) |
+| `auto-fix-wifi.sh --check` | one check-only pass: prints ping/dns/http results, never fixes or reboots |
+
+On a fresh install (no conf yet) the installer runs `--reconfigure`; a plain
+`./install.sh` over an existing conf is an upgrade: it keeps your conf, fills in any
+new settings (logged as `bootstrap:` lines) and runs `--check`.
+
+The **HTTP check URL** prompt defaults to `https://api.ipify.org/`. Press Enter to
+accept, type a new `http(s)://` URL, or type `none` to skip the HTTP check (isolated
+networks with no internet and no reachable local endpoint). On `--reconfigure` the
+default shown is the URL already in the conf, or `https://api.ipify.org/` if there is
+none (or it was empty). The prompt only runs on a terminal; without one, or without
+`--http-url`, the conf is left as is and a note says so. The check-only pass at the end
+shows the results and warns if the URL isn't reachable or `dig` is missing.
+
+`--reconfigure` rewrites only the discovered values (`WIFI_IFACE`, `GATEWAY_IP`,
+`DNS_SERVER`, `WIFI_DRIVER`), so a hand-edited `DNS_SERVER` is replaced too; other
+settings such as the reboot limits are kept.
 
 Then review `/etc/auto-fix-wifi.conf` (especially `HTTP_CHECK_URL`). Install `dig`
 too (`sudo apt install dnsutils`, or `bind9-dnsutils`): it lets the DNS check bind to
