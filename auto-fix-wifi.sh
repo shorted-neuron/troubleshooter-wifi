@@ -266,7 +266,7 @@ EOF
   # no reachable local web endpoint). The default assumes internet access --
   # set it to something reachable on this network segment.
   if ! conf_has HTTP_CHECK_URL; then
-    conf_set HTTP_CHECK_URL "https://detectportal.firefox.com/success.txt"
+    conf_set HTTP_CHECK_URL "https://api.ipify.org/"   # keep in sync with install.sh
     log_detail "bootstrap: added missing default HTTP_CHECK_URL"
   fi
   conf_default RETRY_COUNT "3"

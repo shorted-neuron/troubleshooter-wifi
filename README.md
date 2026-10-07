@@ -43,8 +43,8 @@ as a last resort, at most 4 times per 24h (`MAX_REBOOTS_PER_DAY`) and never soon
 
 An HTTP-only failure (ping + DNS fine) is just a warning in syslog — no driver
 reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to
-something reachable from the network the Pi is on (the default assumes internet
-access; isolated VLANs have none), or leave it empty to skip the HTTP check.
+something reachable from the network the Pi is on (the default, `https://api.ipify.org/`,
+assumes internet access; isolated VLANs have none), or leave it empty to skip the HTTP check.
 Each run also warns if the configured `GATEWAY_IP` differs from the live
 default route (stale config after moving networks); fix with `./install.sh --reconfigure`.
 
@@ -61,6 +61,9 @@ edited in the conf file afterwards and won't be overwritten. The conf is plain
 `KEY=value`, read literally (not sourced by a shell): write values bare, e.g.
 `HTTP_CHECK_URL=https://example.invalid/path?a=1&b=2`, with no backslash escaping.
 One pair of surrounding quotes and trailing whitespace/CR are tolerated and stripped.
+If the HTTP check fails with `curl: (3) URL rejected: Port number was not a decimal
+number` or `Malformed input to a URL function`, look for stray quotes, a backslash or
+trailing characters in `HTTP_CHECK_URL` (`cat -A /etc/auto-fix-wifi.conf` shows them).
 
 **Install:**
 
@@ -68,6 +71,15 @@ One pair of surrounding quotes and trailing whitespace/CR are tolerated and stri
 ./install.sh                # needs sudo; installs script + cron + logrotate, runs bootstrap
 ./install.sh --reconfigure  # same, plus re-discover iface/gateway/DNS/driver
 ```
+
+On a fresh install (no conf yet) and on `--reconfigure`, the installer asks for the
+**HTTP check URL** (default `https://api.ipify.org/`). Press Enter to accept, type a
+new `http(s)://` URL, or type `none` to skip the HTTP check (isolated networks with no
+internet and no reachable local endpoint). On `--reconfigure` the default shown is the
+URL already in the conf, or `https://api.ipify.org/` if there is none (or it was
+empty). The prompt only runs on a terminal; without one the conf is left as is. A plain
+`./install.sh` upgrade over an existing conf doesn't ask. Afterwards the installer
+test-fetches the chosen URL and warns if it isn't reachable.
 
 Plain `./install.sh` is also the upgrade path: it keeps your conf and fills in any
 new settings. Use `--reconfigure` after swapping a dongle or moving the Pi to
