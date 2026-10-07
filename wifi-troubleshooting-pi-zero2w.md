@@ -153,9 +153,36 @@ Two Zero 2W units on isolated VLANs (`pi-zero-1` and a second unit) rebooted eve
   `REBOOT_MAX_PER_DAY` (default 2) per 24h, then log-only; each run warns when the
   configured gateway differs from the live default route; failure/recovery/reboot
   log lines now include `ping=… dns=… http=…`.
+  (Follow-up: the cap was renamed `MAX_REBOOTS_PER_DAY` (was `REBOOT_MAX_PER_DAY`), default 4, applied by the
+  script even when absent from the conf; added `MIN_REBOOT_INTERVAL` (default `60m`,
+  accepts `90s`/`60m`/`1h`/`1d`, any case) so reboots can't bunch up within the daily
+  cap; `auto-fix-wifi.sh --reconfigure` (alias `--rediscover`; `install.sh` delegates to
+  it) now prompts for and test-fetches the configured
+  `HTTP_CHECK_URL` and warns if it's unreachable.)
 - **Diagnostic pattern:** `ping=ok dns=ok http=FAIL` repeating = the HTTP target is
   unreachable from this network, not a wifi problem. Pick a target reachable on that
   segment (see README).
+
+## Verification on hardware — installer, reboot limits, quoted conf values
+
+Checked on a Pi (`pi-zero-1`, brcmfmac, old script installed and cron-driven) running
+the PR 3 branch:
+
+- **Sandboxed runs** (real checks, `modprobe`/`systemctl`/`nmcli`/`reboot` stubbed so
+  the live wifi stays up): an old-style conf got `MAX_REBOOTS_PER_DAY` and
+  `MIN_REBOOT_INTERVAL` filled in with existing values kept; a forced link failure
+  showed `lsmod` dependents `brcmfmac_cyw` unloaded before `brcmfmac`, one reboot
+  allowed, the second refused by `MIN_REBOOT_INTERVAL`.
+- **Quoted URL bug reproduced on curl 8.14:** `HTTP_CHECK_URL="https://…"` makes curl
+  fail with `(3) URL rejected: Port number was not a decimal number between 0 and
+  65535` (the leading quote makes `"https` look like a host and `//…` like a port).
+  The conf is read literally, not sourced by a shell, so quoting is not interpreted.
+  Fixed by stripping one pair of surrounding quotes in `conf_get`.
+- **Live:** `./install.sh --reconfigure` upgraded the script and conf in place (only
+  the two new keys added, backup kept alongside the conf), and with a quoted
+  `HTTP_CHECK_URL` the installed script logged `ping=ok dns=ok http=ok`.
+- **Not exercised:** the real module unload/reload (it would drop the wifi link the
+  test session runs over).
 
 ## Related scripts (this dir)
 

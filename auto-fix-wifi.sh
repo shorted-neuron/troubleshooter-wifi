@@ -14,8 +14,8 @@
 #     /etc/auto-fix-wifi.conf: wifi interface, gateway IP, DNS server
 #     (defaults to the system resolver from /etc/resolv.conf, freely
 #     override-able), wifi driver module name, check targets, timings.
-#     Re-run with --rediscover to force re-bootstrapping (e.g. after
-#     swapping dongles).
+#     Re-run with --reconfigure to force re-discovery (e.g. after swapping
+#     dongles); see "Modes" below.
 #   - Each cycle: ping gateway (bound to wifi iface) + DNS lookup (against
 #     the configured DNS server) + HTTP(S) check (bound to wifi iface where
 #     possible, redirects never followed -- any response status counts as
@@ -31,9 +31,11 @@
 #     full fix (stop NetworkManager, reload module, start NetworkManager).
 #   - If the fix doesn't recover connectivity, increment a persistent
 #     consecutive-failure counter; after REBOOT_THRESHOLD consecutive failed
-#     fix cycles, reboot as a last resort -- at most REBOOT_MAX_PER_DAY times
-#     per 24h, after that it only logs (a reboot that doesn't fix anything
-#     must not repeat forever).
+#     fix cycles, reboot as a last resort -- at most MAX_REBOOTS_PER_DAY
+#     times per 24h (default 4) and never sooner than MIN_REBOOT_INTERVAL
+#     after the previous one (default 60m; accepts e.g. 90s, 60m, 1h, 1d,
+#     any case; a bare number is minutes). Otherwise it only logs (a reboot
+#     that doesn't fix anything must not repeat forever).
 #   - Every run compares the configured GATEWAY_IP with the live default
 #     route on the wifi iface and warns on mismatch (stale config after
 #     moving networks). It never rewrites the config on its own; use
@@ -42,6 +44,22 @@
 #     card later). High-level pass/fail goes to syslog every run. Any
 #     restart/reload/reboot action is logged loudly to syslog (warning/err/
 #     crit) AND to a dedicated actions log file.
+#
+# Modes (all configuration lives here; install.sh only installs files and
+# delegates to these):
+#   (no args)          the monitor: run from cron.
+#   --reconfigure      configure-only, never fixes/reboots: re-discover iface/
+#                      gateway/DNS/driver, fill in any missing settings, ask
+#                      for the HTTP check URL (only when stdin is a terminal;
+#                      default = the current URL, else $DEFAULT_HTTP_URL),
+#                      then one check-only pass that prints the results.
+#                      --rediscover is an alias.
+#   --http-url URL     with --reconfigure: set HTTP_CHECK_URL without
+#                      prompting. URL is http(s)://..., or "none" to skip the
+#                      HTTP check. Works without a terminal.
+#   --check            one check-only pass (ping/dns/http), prints results,
+#                      never fixes or reboots.
+#   -h, --help         usage.
 #
 # Must run as root (module unload/reload, nmcli, systemctl, reboot).
 
@@ -63,9 +81,41 @@ ACTIONS_LOG="$LOG_DIR/actions.log"
 LOCKFILE="/var/run/auto-fix-wifi.lock"
 TAG="auto-fix-wifi"
 
+# default HTTP check target on a fresh install (no path or params)
+DEFAULT_HTTP_URL="https://api.ipify.org/"
+
+usage() {
+  cat <<EOF
+usage: $0 [--reconfigure [--http-url URL|none] | --check]
+  (no args)                  run the monitor (cron)
+  --reconfigure              re-discover iface/gateway/DNS/driver, fill in missing
+                             settings, ask for the HTTP check URL, then one
+                             check-only pass. --rediscover is an alias.
+  --http-url URL|none        with --reconfigure: set the HTTP check URL without
+                             prompting (none = skip the HTTP check)
+  --check                    one check-only pass; never fixes or reboots
+EOF
+}
+
+MODE=run            # run | reconfigure | check
 REDISCOVER=0
-if [ "${1:-}" = "--rediscover" ]; then
-  REDISCOVER=1
+HTTP_URL_ARG=""
+HTTP_URL_ARG_SET=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --reconfigure|--rediscover) MODE=reconfigure; REDISCOVER=1 ;;
+    --check) [ "$MODE" = "run" ] && MODE=check ;;
+    --http-url)
+      [ "$#" -ge 2 ] || { echo "--http-url needs a value" >&2; usage >&2; exit 2; }
+      HTTP_URL_ARG="$2"; HTTP_URL_ARG_SET=1; shift ;;
+    --http-url=*) HTTP_URL_ARG="${1#--http-url=}"; HTTP_URL_ARG_SET=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+if [ "$HTTP_URL_ARG_SET" = "1" ] && [ "$MODE" != "reconfigure" ]; then
+  echo "--http-url only works with --reconfigure" >&2; usage >&2; exit 2
 fi
 
 # ---------------------------------------------------------------------------
@@ -103,9 +153,21 @@ ensure_dirs() {
 conf_get() {
   # $1 = key; prints value from $CONF if present, else empty.
   # Strips only the first "key=" prefix so values containing "=" (e.g. URLs
-  # with query strings) survive intact.
+  # with query strings) survive intact. The conf is read literally, NOT
+  # sourced by a shell, so quoting/escaping isn't interpreted: tolerate the
+  # natural KEY="value" / KEY='value' style by stripping one pair of matching
+  # surrounding quotes, plus trailing CR/whitespace (stray quotes, CRLF line
+  # endings and trailing spaces all make curl reject the URL).
   [ -f "$CONF" ] || return 0
-  awk -v k="$1" 'index($0, k "=") == 1 { sub(/^[^=]*=/, ""); print; exit }' "$CONF"
+  awk -v k="$1" 'index($0, k "=") == 1 {
+      v = $0; sub(/^[^=]*=/, "", v)
+      gsub(/\r/, "", v); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v)
+      if (length(v) >= 2) {
+        f = substr(v, 1, 1); l = substr(v, length(v))
+        if ((f == "\"" && l == "\"") || (f == "\047" && l == "\047")) v = substr(v, 2, length(v) - 2)
+      }
+      print v; exit
+    }' "$CONF"
 }
 
 conf_has() {
@@ -114,14 +176,19 @@ conf_has() {
 }
 
 conf_set() {
-  # $1 = key, $2 = value; append or update in $CONF
+  # $1 = key, $2 = value; append or update in $CONF. The value goes to awk via
+  # the environment, not -v (which would interpret backslash escapes) and not
+  # into a sed replacement (where & and \ are special), so any URL survives
+  # intact. cat > (not mv) keeps the conf's existing owner/mode.
   [ -f "$CONF" ] || : >"$CONF"
-  if grep -q "^$1=" "$CONF" 2>/dev/null; then
-    # in-place update (portable-ish sed -i)
-    sed -i "s#^$1=.*#$1=$2#" "$CONF"
-  else
-    printf '%s=%s\n' "$1" "$2" >>"$CONF"
-  fi
+  conf_tmp="$CONF.tmp.$$"
+  KEY="$1" VAL="$2" awk '
+    BEGIN { k = ENVIRON["KEY"]; v = ENVIRON["VAL"] }
+    index($0, k "=") == 1 && !done { print k "=" v; done = 1; next }
+    { print }
+    END { if (!done) print k "=" v }' "$CONF" >"$conf_tmp"
+  cat "$conf_tmp" >"$CONF"
+  rm -f "$conf_tmp"
 }
 
 discover_wifi_iface() {
@@ -191,9 +258,37 @@ discover_wifi_driver() {
   fi
 }
 
+conf_refresh() {
+  # $1 = key, $2 = freshly discovered value. On --rediscover, never replace a
+  # working value with an empty result (e.g. link down while rediscovering).
+  old=$(conf_get "$1")
+  if [ -z "$2" ] && [ -n "$old" ]; then
+    log_detail "bootstrap: WARNING could not rediscover $1 (nothing found); keeping $old"
+    return 0
+  fi
+  conf_set "$1" "$2"
+  log_detail "bootstrap: $1=$2"
+}
+
+conf_default() {
+  # $1 = key, $2 = default. Fills in a missing/empty key; never overwrites a
+  # value. Logged, so a --reconfigure shows exactly which params it added.
+  [ -z "$(conf_get "$1")" ] || return 0
+  conf_set "$1" "$2"
+  log_detail "bootstrap: added missing default $1=$2"
+}
+
 bootstrap_config_if_needed() {
   ensure_dirs
-  [ -f "$CONF" ] || : >"$CONF"
+  if [ ! -f "$CONF" ]; then
+    cat >"$CONF" <<'EOF'
+# auto-fix-wifi.conf -- plain KEY=value, read literally (NOT sourced by a shell):
+# no escaping or variable expansion. Write values bare, e.g.
+#   HTTP_CHECK_URL=https://example.invalid/path?a=1&b=2
+# One pair of surrounding quotes is tolerated and stripped. Empty HTTP_CHECK_URL
+# skips the HTTP check.
+EOF
+  fi
 
   cur_iface=$(conf_get WIFI_IFACE)
   if [ "$REDISCOVER" = "1" ] || [ -z "$cur_iface" ]; then
@@ -202,43 +297,40 @@ bootstrap_config_if_needed() {
     log_detail "bootstrap: WIFI_IFACE=$cur_iface"
   fi
 
-  cur_gw=$(conf_get GATEWAY_IP)
-  if [ "$REDISCOVER" = "1" ] || [ -z "$cur_gw" ]; then
-    cur_gw=$(discover_gateway "$cur_iface")
-    conf_set GATEWAY_IP "$cur_gw"
-    log_detail "bootstrap: GATEWAY_IP=$cur_gw"
+  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get GATEWAY_IP)" ]; then
+    conf_refresh GATEWAY_IP "$(discover_gateway "$cur_iface")"
   fi
 
-  cur_dns=$(conf_get DNS_SERVER)
-  if [ "$REDISCOVER" = "1" ] || [ -z "$cur_dns" ]; then
-    cur_dns=$(discover_dns_server "$cur_iface")
-    conf_set DNS_SERVER "$cur_dns"
-    log_detail "bootstrap: DNS_SERVER=$cur_dns"
+  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get DNS_SERVER)" ]; then
+    conf_refresh DNS_SERVER "$(discover_dns_server "$cur_iface")"
   fi
 
-  cur_drv=$(conf_get WIFI_DRIVER)
-  if [ "$REDISCOVER" = "1" ] || [ -z "$cur_drv" ]; then
-    cur_drv=$(discover_wifi_driver "$cur_iface")
-    conf_set WIFI_DRIVER "$cur_drv"
-    log_detail "bootstrap: WIFI_DRIVER=$cur_drv"
+  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get WIFI_DRIVER)" ]; then
+    conf_refresh WIFI_DRIVER "$(discover_wifi_driver "$cur_iface")"
   fi
 
-  # Fixed defaults, only set if absent (never overwritten by --rediscover,
-  # these aren't hardware-discovered, they're policy).
-  [ -n "$(conf_get DNS_CHECK_NAME)" ]   || conf_set DNS_CHECK_NAME "example.com"
+  # Fixed defaults, only set if absent/empty (never overwritten by
+  # --rediscover, these aren't hardware-discovered, they're policy). This runs
+  # on every start, so a conf from an older version gets any newly added
+  # settings filled in automatically.
+  conf_default DNS_CHECK_NAME "example.com"
   # HTTP_CHECK_URL: only defaulted when the key is absent. An existing empty
   # value means "skip the HTTP check" (isolated networks with no internet and
   # no reachable local web endpoint). The default assumes internet access --
   # set it to something reachable on this network segment.
-  conf_has HTTP_CHECK_URL || conf_set HTTP_CHECK_URL "https://detectportal.firefox.com/success.txt"
-  [ -n "$(conf_get RETRY_COUNT)" ]      || conf_set RETRY_COUNT "3"
-  [ -n "$(conf_get RETRY_WAIT)" ]       || conf_set RETRY_WAIT "10"
-  [ -n "$(conf_get PING_TIMEOUT)" ]     || conf_set PING_TIMEOUT "2"
-  [ -n "$(conf_get HTTP_TIMEOUT)" ]     || conf_set HTTP_TIMEOUT "5"
-  [ -n "$(conf_get MODULE_RELOAD_WAIT)" ] || conf_set MODULE_RELOAD_WAIT "5"
-  [ -n "$(conf_get IFACE_WAIT_MAX)" ]   || conf_set IFACE_WAIT_MAX "15"
-  [ -n "$(conf_get REBOOT_THRESHOLD)" ] || conf_set REBOOT_THRESHOLD "5"
-  [ -n "$(conf_get REBOOT_MAX_PER_DAY)" ] || conf_set REBOOT_MAX_PER_DAY "2"
+  if ! conf_has HTTP_CHECK_URL; then
+    conf_set HTTP_CHECK_URL "$DEFAULT_HTTP_URL"
+    log_detail "bootstrap: added missing default HTTP_CHECK_URL"
+  fi
+  conf_default RETRY_COUNT "3"
+  conf_default RETRY_WAIT "10"
+  conf_default PING_TIMEOUT "2"
+  conf_default HTTP_TIMEOUT "5"
+  conf_default MODULE_RELOAD_WAIT "5"
+  conf_default IFACE_WAIT_MAX "15"
+  conf_default REBOOT_THRESHOLD "5"
+  conf_default MAX_REBOOTS_PER_DAY "4"
+  conf_default MIN_REBOOT_INTERVAL "60m"
 }
 
 load_config() {
@@ -255,7 +347,39 @@ load_config() {
   MODULE_RELOAD_WAIT=$(conf_get MODULE_RELOAD_WAIT)
   IFACE_WAIT_MAX=$(conf_get IFACE_WAIT_MAX)
   REBOOT_THRESHOLD=$(conf_get REBOOT_THRESHOLD)
-  REBOOT_MAX_PER_DAY=$(conf_get REBOOT_MAX_PER_DAY)
+  # Built-in default applies even if the key is missing/empty/non-numeric in
+  # the conf (e.g. a conf hand-edited or created before this setting existed).
+  MAX_REBOOTS_PER_DAY=$(conf_get MAX_REBOOTS_PER_DAY)
+  case "$MAX_REBOOTS_PER_DAY" in
+    ''|*[!0-9]*) MAX_REBOOTS_PER_DAY=4 ;;
+  esac
+  MIN_REBOOT_INTERVAL=$(conf_get MIN_REBOOT_INTERVAL)
+  if [ -z "$MIN_REBOOT_INTERVAL" ]; then
+    MIN_REBOOT_INTERVAL=60m
+  elif ! parse_duration "$MIN_REBOOT_INTERVAL" >/dev/null; then
+    log_syslog warning "invalid MIN_REBOOT_INTERVAL '$MIN_REBOOT_INTERVAL' in $CONF (use e.g. 90s, 60m, 1h, 1d); using 60m"
+    log_detail "WARNING: invalid MIN_REBOOT_INTERVAL '$MIN_REBOOT_INTERVAL'; using 60m"
+    MIN_REBOOT_INTERVAL=60m
+  fi
+  MIN_REBOOT_INTERVAL_SECS=$(parse_duration "$MIN_REBOOT_INTERVAL")
+}
+
+parse_duration() {
+  # $1 = duration like 90s, 60m, 1h, 1d (any case); bare number = minutes.
+  # Prints seconds, returns 1 (printing nothing) if unparseable.
+  d=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+  case "$d" in
+    *[!0-9smhd]*|''|[smhd]*|*[smhd]?*) return 1 ;;
+  esac
+  case "$d" in
+    *s) n=${d%s}; mult=1 ;;
+    *m) n=${d%m}; mult=60 ;;
+    *h) n=${d%h}; mult=3600 ;;
+    *d) n=${d%d}; mult=86400 ;;
+    *)  n=$d;     mult=60 ;;
+  esac
+  [ -n "$n" ] || return 1
+  echo $((n * mult))
 }
 
 warn_if_gateway_stale() {
@@ -345,7 +469,7 @@ check_http() {
   # (the "if" here is deliberate -- with `set -e`, a bare
   # `http_code=$(cmd)` assignment would abort the script on curl's nonzero
   # exit instead of letting us handle it)
-  if http_code=$(curl --interface "$WIFI_IFACE" -sS --max-time "$HTTP_TIMEOUT" \
+  if http_code=$(curl --interface "$WIFI_IFACE" -g -sS --max-time "$HTTP_TIMEOUT" \
       -o /dev/null -w '%{http_code}' "$HTTP_CHECK_URL" 2>>"$DETAIL_LOG"); then
     rc=0
   else
@@ -472,6 +596,107 @@ reboots_last_24h() {
   wc -l <"$REBOOT_TIMES_FILE" | tr -d ' '
 }
 
+last_reboot_epoch() {
+  # Prints epoch of the most recent reboot this script initiated, 0 if none.
+  if [ -s "$REBOOT_TIMES_FILE" ]; then
+    tail -n 1 "$REBOOT_TIMES_FILE"
+  else
+    echo 0
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# --reconfigure / --check (interactive, never fix or reboot)
+# ---------------------------------------------------------------------------
+
+valid_http_url() {
+  case "$1" in
+    *[[:space:]]*) return 1 ;;
+    http://?*|https://?*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_none() {
+  [ "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" = "none" ]
+}
+
+prompt_http_url() {
+  # $1 = default shown/accepted on Enter. Sets HTTP_CHOICE.
+  while :; do
+    printf 'HTTP check URL [%s] (Enter = accept, "none" = skip the HTTP check): ' "$1"
+    if ! IFS= read -r ans; then ans=""; echo; fi   # EOF: accept the default
+    ans=$(printf '%s' "$ans" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -z "$ans" ]; then HTTP_CHOICE="$1"; return 0; fi
+    if is_none "$ans"; then HTTP_CHOICE=""; return 0; fi
+    if valid_http_url "$ans"; then HTTP_CHOICE="$ans"; return 0; fi
+    echo "  must start with http:// or https:// with no spaces (or type none)"
+  done
+}
+
+configure_http_url() {
+  # --http-url value if given, else prompt on a terminal, else leave as is.
+  cur_url=$(conf_get HTTP_CHECK_URL)
+  # the current URL is the default when there is one; none (or an
+  # intentionally empty value) falls back to the built-in default
+  def_url="${cur_url:-$DEFAULT_HTTP_URL}"
+  if [ "$HTTP_URL_ARG_SET" = "1" ]; then
+    if is_none "$HTTP_URL_ARG"; then
+      HTTP_CHOICE=""
+    elif valid_http_url "$HTTP_URL_ARG"; then
+      HTTP_CHOICE="$HTTP_URL_ARG"
+    else
+      echo "--http-url: must start with http:// or https:// with no spaces (or none)" >&2
+      exit 2
+    fi
+  elif [ -t 0 ]; then
+    echo
+    echo "The monitor's HTTP check needs a URL reachable from the network this Pi is on."
+    echo "On an isolated network with no internet, use a local endpoint or 'none'."
+    prompt_http_url "$def_url"
+  else
+    echo "Not interactive: leaving HTTP_CHECK_URL as is (${cur_url:-empty}). Use --http-url URL|none to set it."
+    return 0
+  fi
+  if [ "$HTTP_CHOICE" != "$cur_url" ]; then
+    conf_set HTTP_CHECK_URL "$HTTP_CHOICE"
+    log_detail "reconfigure: HTTP_CHECK_URL=${HTTP_CHOICE:-(empty)}"
+    echo "HTTP_CHECK_URL set to: ${HTTP_CHOICE:-(empty, HTTP check skipped)}"
+  fi
+}
+
+check_only_pass() {
+  # One battery, no retries, no fix, no reboot, results printed. Exit status
+  # is 0 when the link-level checks (ping + DNS) pass.
+  echo
+  if ! command -v dig >/dev/null 2>&1; then
+    echo "WARNING: dig not found. Without it the DNS check can't be bound to the wifi interface and" >&2
+    echo "  falls back to the system resolver (could answer over eth0). Install it:" >&2
+    echo "  sudo apt install dnsutils  (bind9-dnsutils on newer releases)" >&2
+  fi
+  start=0
+  if [ -f "$DETAIL_LOG" ]; then start=$(wc -l <"$DETAIL_LOG"); fi
+  pass_rc=0
+  run_cycle || pass_rc=1
+  # This pass's summary lines from the detail log: our timestamped check lines
+  # (timestamp stripped) plus any error line a tool printed itself (curl:,
+  # ping:, dig:, getent:). The tools' normal stdout (ping statistics, dig
+  # answers) stays in the detail log only.
+  tail -n +"$((start + 1))" "$DETAIL_LOG" | awk '
+    /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[^ ]+ / { sub(/^[^ ]+ /, ""); print; next }
+    /^(curl|ping|dig|getent): / || /^;; / { print }'
+  echo "Check results: $(results)"
+  if [ "$HTTP_RES" = "FAIL" ]; then
+    echo "WARNING: HTTP_CHECK_URL ($HTTP_CHECK_URL) is not reachable from this network." >&2
+    echo "  The monitor will log a warning on every run (it won't reload drivers or reboot for this)." >&2
+    echo "  Fix: $0 --reconfigure --http-url <reachable URL>   (or --http-url none to skip)" >&2
+  fi
+  if [ "$pass_rc" != "0" ]; then
+    echo "WARNING: a link-level check (ping/dns) failed. The monitor will attempt a fix on its next run." >&2
+  fi
+  return "$pass_rc"
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -481,13 +706,29 @@ ensure_dirs
 exec 9>"$LOCKFILE"
 if ! flock -n 9; then
   log_detail "another instance is still running; exiting"
+  if [ "$MODE" != "run" ]; then
+    echo "another auto-fix-wifi instance is running; try again in a moment" >&2
+    exit 3
+  fi
   exit 0
 fi
 
 bootstrap_config_if_needed
 load_config
 
+if [ "$MODE" = "reconfigure" ]; then
+  configure_http_url
+  load_config          # pick up the new HTTP_CHECK_URL
+fi
+
 warn_if_gateway_stale
+
+if [ "$MODE" != "run" ]; then
+  # configure/check modes never reach the fix or reboot path below
+  rc=0
+  check_only_pass || rc=$?
+  exit "$rc"
+fi
 
 log_detail "=== run start (WIFI_IFACE=$WIFI_IFACE GATEWAY_IP=$GATEWAY_IP DNS_SERVER=$DNS_SERVER WIFI_DRIVER=$WIFI_DRIVER) ==="
 
@@ -539,11 +780,14 @@ log_action err "fix did not recover connectivity ($(results)); consecutive faile
 
 if [ "$fail_count" -ge "$REBOOT_THRESHOLD" ]; then
   recent=$(reboots_last_24h)
-  if [ "$recent" -ge "$REBOOT_MAX_PER_DAY" ]; then
+  if [ "$recent" -ge "$MAX_REBOOTS_PER_DAY" ]; then
     # a reboot that didn't help last time won't help now; stop and just log
-    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but already rebooted $recent times in 24h (max $REBOOT_MAX_PER_DAY); NOT rebooting, needs human attention"
+    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but already rebooted $recent times in the last 24h (max $MAX_REBOOTS_PER_DAY); NOT rebooting, needs human attention"
+  elif since=$(( $(date +%s) - $(last_reboot_epoch) )); [ "$since" -lt "$MIN_REBOOT_INTERVAL_SECS" ]; then
+    # fail counter stays at/above threshold, so the next run re-evaluates
+    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but last reboot was ${since}s ago (MIN_REBOOT_INTERVAL=$MIN_REBOOT_INTERVAL); NOT rebooting yet, $((MIN_REBOOT_INTERVAL_SECS - since))s to go"
   else
-    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)); rebooting as last resort (reboot $((recent + 1))/$REBOOT_MAX_PER_DAY in 24h)"
+    log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)); rebooting as last resort (reboot $((recent + 1))/$MAX_REBOOTS_PER_DAY in 24h)"
     date +%s >>"$REBOOT_TIMES_FILE"
     write_fail_count 0
     reboot
