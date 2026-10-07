@@ -678,8 +678,13 @@ check_only_pass() {
   if [ -f "$DETAIL_LOG" ]; then start=$(wc -l <"$DETAIL_LOG"); fi
   pass_rc=0
   run_cycle || pass_rc=1
-  # this pass's detail lines, timestamps stripped (includes curl's own errors)
-  tail -n +"$((start + 1))" "$DETAIL_LOG" | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[^ ]+ //'
+  # This pass's summary lines from the detail log: our timestamped check lines
+  # (timestamp stripped) plus any error line a tool printed itself (curl:,
+  # ping:, dig:, getent:). The tools' normal stdout (ping statistics, dig
+  # answers) stays in the detail log only.
+  tail -n +"$((start + 1))" "$DETAIL_LOG" | awk '
+    /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[^ ]+ / { sub(/^[^ ]+ /, ""); print; next }
+    /^(curl|ping|dig|getent): / || /^;; / { print }'
   echo "Check results: $(results)"
   if [ "$HTTP_RES" = "FAIL" ]; then
     echo "WARNING: HTTP_CHECK_URL ($HTTP_CHECK_URL) is not reachable from this network." >&2
