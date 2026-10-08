@@ -595,7 +595,7 @@ reload_wifi_module() {
 }
 
 fix_wifi_only_bounce() {
-  log_action warning "checks failed $RETRY_COUNT times and on recheck; attempting scoped wifi-only fix (disconnect + reload $WIFI_DRIVER + reconnect) on $WIFI_IFACE"
+  log_action warning "checks failed $RETRY_COUNT times${RECHECK_NOTE}; attempting scoped wifi-only fix (disconnect + reload $WIFI_DRIVER + reconnect) on $WIFI_IFACE"
   nmcli device disconnect "$WIFI_IFACE" >>"$DETAIL_LOG" 2>&1 || true
   reload_wifi_module || true
   ip link set "$WIFI_IFACE" up >>"$DETAIL_LOG" 2>&1 || true
@@ -780,6 +780,7 @@ while [ "$attempt" -le "$RETRY_COUNT" ]; do
 done
 
 rechecked=0
+RECHECK_NOTE=""   # " and a recheck after Ns" only when a recheck actually ran
 if [ "$passed" != "1" ] && [ "$RECHECK_WAIT" -gt 0 ]; then
   # all attempts failed: before bouncing anything, look again after the time a
   # background wifi scan takes (see header). Transient outages end here.
@@ -788,6 +789,7 @@ if [ "$passed" != "1" ] && [ "$RECHECK_WAIT" -gt 0 ]; then
   sleep "$RECHECK_WAIT"
   log_detail "check cycle recheck"
   rechecked=1
+  RECHECK_NOTE=" and a recheck after ${RECHECK_WAIT}s"
   if run_cycle; then
     passed=1
   fi
@@ -806,7 +808,7 @@ if [ "$passed" = "1" ]; then
   exit 0
 fi
 
-log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts and a recheck after ${RECHECK_WAIT}s; attempting fix"
+log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts${RECHECK_NOTE}; attempting fix"
 
 fix_wifi_only_bounce
 if run_cycle; then
