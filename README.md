@@ -34,8 +34,13 @@ cron periodically. It supersedes manually running the diag/retry scripts for
 Each run: pings the gateway, does a DNS lookup, and does an HTTP(S) check — all
 bound to the wifi interface where possible so a working `eth0` on dual-NIC
 boxes can't mask a dead wifi link. Ping and DNS are the link-level checks; if
-either fails, it waits 10s and retries the whole battery, up to 3 times. If
-it's still down, it tries a scoped wifi-only fix (disconnect + reload the wifi
+either fails, it waits 10s and retries the whole battery, up to 3 times. Each
+attempt is more than one packet: up to `PING_COUNT` pings (default 3, 1 s apart,
+stops at the first reply) and `dig` with `DNS_TRIES` (default 2), because a lossy
+link fails a single-packet check fairly often. If every attempt failed it waits
+`RECHECK_WAIT` seconds (default 45, `0` = off) and checks once more, since a USB
+dongle's background wifi scan can swallow a whole round of retries. Only if that
+also fails does it try a scoped wifi-only fix (disconnect + reload the wifi
 driver module + reconnect) before escalating to a full fix (stop
 NetworkManager, reload the module, start NetworkManager). If the fix doesn't
 recover connectivity for 5 consecutive cron cycles (configurable), it reboots
