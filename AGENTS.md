@@ -77,6 +77,12 @@ Report every file touched, so `git status` holds no surprises.
 - On tool failure leaving partial state: `⚠️  Partial state: path (what's wrong)`.
 - End of task: list all files modified.
 
+## tmux
+
+When running in tmux (`$TMUX` set), keep the tmux window title synced with the
+Claude session name: `tmux rename-window -t "$TMUX_PANE" "<session name>"` at
+session start and after any `/rename`. No-op outside tmux.
+
 ## Keeping this file current
 
 Major pattern change (workflow, script conventions, validation) → update
