@@ -187,7 +187,7 @@ script and `/etc/default/sae-trial`; `systemctl daemon-reload`; `nmcli connectio
 | Test | Result |
 |---|---|
 | Activate the SAE profile by hand, 2.4 GHz BSS | connected, `key_mgmt=SAE`, 0 % loss over 6 pings |
-| Same, forced onto the 5 GHz BSS (-76 dBm client-side, -70 dBm AP-side) | connected in about 22 s, H2E exchange, `key_mgmt=SAE`; AP log `auth_alg=sae`, no downgrade message; 2 of the first 9 AP frames failed (the usual mild front-loading) |
+| Same, forced onto the 5 GHz BSS (-76 dBm client-side, -70 dBm AP-side) | connected in about 22 s, H2E exchange, `key_mgmt=SAE`; AP log `auth_alg=sae`, no downgrade message; 2 of the first 9 AP frames failed (the usual mild front-loading); SAE and the 4-way handshake finished within 0.02 s, but DHCP took 15 s to hand out a lease (the weak-5 GHz early-association unicast problem from the general file, not SAE) |
 | Reboot | SAE profile connected at the first attempt (the service set `sae_pwe` about 1 s before NM started the activation); no fallback |
 | Wifi radio off/on (interface recreated, `sae_pwe` back to 0) | first SAE attempt fails and times out (about 75 s), NM falls back to PSK, the hook sets `sae_pwe=1` and retries: SAE again after 102 s |
 | `systemctl restart NetworkManager` | same chain, SAE again after 86 s |
