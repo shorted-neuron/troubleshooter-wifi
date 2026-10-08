@@ -221,8 +221,8 @@ Pitfalls hit while doing this:
 | `pi-2-1` | Pi 2 Model B, `rt2800usb` dongle | yes | SAE works after text password |
 | `pi-b-plus-1` | Pi Model B+, `rtl8192cu` dongle | yes | SAE works after text password |
 | `pi-4-1` | Pi 4, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); SAE works if forced, see below |
-| `pi-zero-1` | Zero 2W, built-in brcmfmac | not offered by NM | WPA2-PSK in use, joins a WPA2-only SSID; forced SAE untested |
-| `pi-zero-2` | Zero 2W, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); survived the AP change; forced SAE untested |
+| `pi-zero-1` | Zero 2W, built-in brcmfmac | not offered by NM | WPA2-PSK in use, joins a WPA2-only SSID; same chip family as `pi-zero-2`, whose forced SAE fails (below) |
+| `pi-zero-2` | Zero 2W, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); survived the AP change; **forced SAE fails**: no SAE exchange, authentication times out |
 | `pi-zero-3` | Pi Zero, `rtl8192cu` dongle | yes | already on SAE with a text password; survived the AP change |
 | `pi-2-2` | Pi 2 Model B, `mt7601u` dongle | yes | already on SAE with a text password; survived the AP change |
 | `pi-4-2` | Pi 4, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); stable on 5 GHz; forced SAE works with `sae_pwe=1` (tested, 2.4 GHz) |
@@ -233,7 +233,7 @@ capabilities. That is yes for the dongle Pis (their drivers run SAE through mac8
 built-in brcmfmac Pis it is no, so NetworkManager never adds `SAE` to a `wpa-psk` profile and they stay on
 WPA2-PSK even though the SSID is `sae-mixed`.
 
-**brcmfmac can still do SAE, if told to (tested on a Pi 4).** `iw phy` says "Device supports SAE
+**brcmfmac can still do SAE, if told to (tested on a Pi 4; it does NOT work on the Zero 2W, see below).** `iw phy` says "Device supports SAE
 with AUTHENTICATE command" and the kernel hands SAE to userspace (external auth). With a cloned
 temporary profile forced to `key-mgmt=sae` on the 2.4 GHz BSS:
 1. wpa_supplicant 2.10 ran the SAE exchange (commit and confirm both with status 0) but derived the
@@ -250,11 +250,18 @@ So the AP setting `sae_pwe=2` is correct; no AP change is needed. The dongle Pis
 because their normal SME path uses H2E automatically. `wpa_cli set sae_pwe` is runtime-only (lost when
 the supplicant interface is recreated); a persistent setup (boot service + NetworkManager dispatcher hook
 + a second SAE profile with the PSK profile as fallback) was built and tested on one Pi 4, on both
-bands, across reboot, radio toggle and NM restart; see `wifi-troubleshooting-rpi4-5.md`. Not tested: the
-Zero 2W and the Pi 5.
+bands, across reboot, radio toggle and NM restart; see `wifi-troubleshooting-rpi4-5.md`. The Pi 5 is untested.
+
+**The Zero 2W cannot do SAE (tested).** The same forced-`key-mgmt=sae` test with `sae_pwe=1` on a Zero 2W
+(BCM43430/1, firmware 7.45.96 dated 2023-06-14, kernel 6.18) never started an SAE exchange: the supplicant
+used the plain `CONNECT` command with the SAE key type (`Auth Type 4`, `akm=00-0f-ac:8`), no external-auth
+event arrived, and 10 s later `Authentication with <bssid> timed out`; NetworkManager failed the activation
+and the self-reverting test restored the PSK profile. `iw phy` on that chip prints the same "SAE with
+AUTHENTICATE command" line as the Pi 4, so that line says nothing about whether SAE really works.
+Treat Zero 2W (and any chip with this firmware) as WPA2-only.
 
 **Implication for migrating to SAE-only.** The dongle Pis can do it once their password is stored as
-text. The brcmfmac Pis can too, but only with an explicit `key-mgmt=sae` profile plus `sae_pwe=1` in the
+text. A Pi 4 (CYW43455-class) can too, but only with an explicit `key-mgmt=sae` profile plus `sae_pwe=1` in the
 supplicant, a client-side change per Pi (the trial setup in the Pi 4/5 file); without it they belong on
 a WPA2-only SSID (or stay on `sae-mixed`, where they keep joining with WPA2-PSK). Do not change the AP's
 `sae_pwe` to suit them: `0` (H&P only) removes the downgrade check, `1` (H2E only) would reject

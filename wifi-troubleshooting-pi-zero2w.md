@@ -206,7 +206,8 @@ Nothing there changes the Zero 2W root cause above. Zero 2W specifics from that 
 - NM sets `bgscan` per activation as described in the general file; only the BSS count seen at
   activation matters. No Zero 2W lossy-link or scan-outage data has been collected (the
   lossy-dongle study was on a different model; see `wifi-troubleshooting-pi-zero-usb.md`).
-- SAE/WPA3: the Zero 2W's supplicant does not list `sae` in its KeyMgmt capabilities either (same
-  situation as the Pi 4), so NM does not offer it and the unit joins with WPA2-PSK and a text password.
-  On the Pi 4 the same brcmfmac driver does SAE when forced with `key-mgmt=sae` and `sae_pwe=1`; that is
-  untested on this Zero 2W. See `wifi-troubleshooting-general.md`.
+- SAE/WPA3: the Zero 2W's supplicant does not list `sae` in its KeyMgmt capabilities, so NM does not offer it
+  and the unit joins with WPA2-PSK and a text password. Forcing SAE (temporary profile with `key-mgmt=sae`,
+  supplicant `sae_pwe=1`) does not work on this chip: firmware 7.45.96 never starts an SAE exchange and the
+  authentication times out after 10 s, unlike the Pi 4. Plan for it to stay WPA2-only (own SSID if the
+  main one goes SAE-only). Details: `wifi-troubleshooting-general.md`.

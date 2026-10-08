@@ -195,8 +195,7 @@ script and `/etc/default/sae-trial`; `systemctl daemon-reload`; `nmcli connectio
 
 **Limits.** After the interface is recreated the Pi runs on the PSK fallback for roughly 1.5 to 2
 minutes before it moves back to SAE, because the failed first attempt has to time out. The monitor's
-driver reload creates the same situation. Tested on one Pi 4 only; the Pi 5 and the Zero 2W are
-untested. The hook's retry cap means a client where SAE does not work stays on the PSK profile after 3 tries.
+driver reload creates the same situation. Tested on one Pi 4 only; the Pi 5 is untested. The Zero 2W cannot use it (its firmware does not do SAE, see the general file). The hook's retry cap means a client where SAE does not work stays on the PSK profile after 3 tries.
 
 ## Pi 5 (`pi-5-1`) survey (2026-10)
 
