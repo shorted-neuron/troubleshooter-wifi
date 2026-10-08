@@ -195,7 +195,7 @@ script and `/etc/default/sae-trial`; `systemctl daemon-reload`; `nmcli connectio
 
 **Limits.** After the interface is recreated the Pi runs on the PSK fallback for roughly 1.5 to 2
 minutes before it moves back to SAE, because the failed first attempt has to time out. The monitor's
-driver reload creates the same situation. Tested on one Pi 4 only; the Pi 5 is untested. The Zero 2W cannot use it (its firmware does not do SAE, see the general file). The hook's retry cap means a client where SAE does not work stays on the PSK profile after 3 tries.
+driver reload creates the same situation. The persistent setup itself was only run on one Pi 4; the Pi 5 was tested with the temporary-profile test only (below). The Zero 2W cannot use it (its firmware does not do SAE, see the general file). The hook's retry cap means a client where SAE does not work stays on the PSK profile after 3 tries.
 
 ## Pi 5 (`pi-5-1`) survey (2026-10)
 
@@ -206,6 +206,20 @@ the supplicant does not list `sae` (same as the Pi 4). The AP saw 0 failed frame
 over 16 hours, so no 5 GHz problem here. One incident: after the AP's radio reload this Pi stayed
 "connected" for about 54 minutes while the AP had forgotten it; see "A client can stay connected to
 an AP that has forgotten it" in `wifi-troubleshooting-general.md`. The monitor was installed afterwards.
+
+**Forced-SAE tests on the Pi 5** (temporary cloned profile with `key-mgmt=sae`, supplicant `sae_pwe=1`
+set at runtime, self-reverting; the Pi is wifi-only):
+
+| Run | Band | Result |
+|---|---|---|
+| 1 | 2.4 GHz BSS | external auth started, H2E commit sent (status 126) and answered by the AP, then `Frame command failed: ret=-110` (the next management frame was not sent), `Authentication ... timed out`; activation failed |
+| 2 | 2.4 GHz BSS | external auth started, then a connect event with `status=16` and no SAE commit/confirm logged; activation failed |
+| 3 | 5 GHz BSS | full SAE exchange (commit 126 / confirm 0), `SAE completed`, `key_mgmt=SAE`, connected in about 6 s, 5 of 5 pings |
+
+So SAE works on this Pi on the band it normally uses and failed both times on 2.4 GHz; the AP saw the
+first commit but no confirm or association on 2.4 GHz. Cause not determined (a frame-transmit timeout on
+2.4 GHz after coming from a 5 GHz association; n=2 on 2.4 GHz, n=1 on 5 GHz). The persistent setup above
+was not installed here.
 
 ## Open items
 

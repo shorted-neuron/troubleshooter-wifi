@@ -226,7 +226,7 @@ Pitfalls hit while doing this:
 | `pi-zero-3` | Pi Zero, `rtl8192cu` dongle | yes | already on SAE with a text password; survived the AP change |
 | `pi-2-2` | Pi 2 Model B, `mt7601u` dongle | yes | already on SAE with a text password; survived the AP change |
 | `pi-4-2` | Pi 4, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); stable on 5 GHz; forced SAE works with `sae_pwe=1` (tested, 2.4 GHz) |
-| `pi-5-1` | Pi 5, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password), 5 GHz; forced SAE untested; see the silent-association note |
+| `pi-5-1` | Pi 5, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password), 5 GHz; forced SAE with `sae_pwe=1` **works on 5 GHz** (connected in 6 s, `key_mgmt=SAE`, 0 % loss) but failed twice on 2.4 GHz; see the Pi 4/5 file and the silent-association note |
 
 **Table heading note.** "Offered by NM" means wpa_supplicant lists `sae` in the interface's `KeyMgmt`
 capabilities. That is yes for the dongle Pis (their drivers run SAE through mac80211). For the
@@ -250,7 +250,7 @@ So the AP setting `sae_pwe=2` is correct; no AP change is needed. The dongle Pis
 because their normal SME path uses H2E automatically. `wpa_cli set sae_pwe` is runtime-only (lost when
 the supplicant interface is recreated); a persistent setup (boot service + NetworkManager dispatcher hook
 + a second SAE profile with the PSK profile as fallback) was built and tested on one Pi 4, on both
-bands, across reboot, radio toggle and NM restart; see `wifi-troubleshooting-rpi4-5.md`. The Pi 5 is untested.
+bands, across reboot, radio toggle and NM restart; see `wifi-troubleshooting-rpi4-5.md`. The Pi 5 works on 5 GHz but failed twice on 2.4 GHz (below, Pi 4/5 file).
 
 **The Zero 2W cannot do SAE (tested).** The same forced-`key-mgmt=sae` test with `sae_pwe=1` on a Zero 2W
 (BCM43430/1, firmware 7.45.96 dated 2023-06-14, kernel 6.18) never started an SAE exchange: the supplicant
