@@ -55,7 +55,7 @@ nmcli device wifi connect "<SSID>" password "<PSK>" ifname wlan0
 ```
 
 Associated cleanly (WPA-PSK, no FT/802.11r involved — this AP doesn't advertise it,
-unlike the `blue` AP noted in the Zero 2W doc), got a DHCP lease, and stayed connected
+unlike the `wifi-A` AP noted in the Zero 2W doc), got a DHCP lease, and stayed connected
 through a short monitoring window. Credentials were applied directly via `nmcli` on
 the device only — never written to any file in this repo.
 
@@ -124,10 +124,29 @@ A bounce does not cure baseline loss and costs minutes of outage, so false trigg
 worth avoiding. Options not taken: locking to one BSSID (stops failover to another AP),
 changing bands (the 5 GHz BSS is weaker at the install location), cabling.
 
+## Offline after an AP security change — cause confirmed (2026-10-07/08)
+
+Resolved. The `rt2800usb` Pi above (`pi-model-b-1`), a Pi 2 Model B with the same dongle
+(`pi-2-1`) and a Pi Model B+ with an `rtl8192cu` dongle (`pi-b-plus-1`) all dropped off wifi when the
+AP's `wifi-A` SSID went `sae-mixed`, and stayed off (one of them was rebooted four times by the monitor,
+then hit its daily cap). Cause: the NM profile held the wifi password as a 64-hex key (Imager boot seed),
+which cannot be used for SAE, while NM offered SAE and wpa_supplicant preferred it. Fix: store the
+password as text. Full chain, checks and the hardware table: `wifi-troubleshooting-general.md`
+(section "WPA3 / SAE").
+
+Dongle-specific notes from the incident:
+- Both `rt2800usb` and `rtl8192cu` complete SAE once the text password is stored.
+- `rtl8192cu` scan wedge recurred on `pi-b-plus-1` after its profile was fixed (`iw dev wlan0 scan`
+  hung, then 0 BSSes). The module reload above cured it (26 networks right after). The monitor's
+  own driver reload would also have done it.
+- `pi-b-plus-1` and `pi-2-1` had no `auto-fix-wifi.sh` before; installed with `install.sh` once they
+  were back (driver autodiscovered as `rtl8192cu` / `rt2800usb`).
+
 ## Related scripts (this dir)
 
 - `wifi-usb-diag.sh` — driver-agnostic diagnostic dump for USB wifi/ethernet dongle
   setups (lsusb, interface→driver mapping, USB/net dmesg, NM state, ethtool). Use this
   instead of `wifi-brcm-diag.sh` (which assumes the built-in `brcmfmac` chip) on any
   Pi with no onboard wifi.
+
 

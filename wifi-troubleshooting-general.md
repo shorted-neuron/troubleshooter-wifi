@@ -1,0 +1,206 @@
+# Wifi Troubleshooting — general findings (all Pi models)
+
+Findings that held on more than one kind of Pi, plus the measurement method used to get
+them. Model-specific logs:
+
+- `wifi-troubleshooting-rpi4-5.md` — Pi 4 / Pi 5 with built-in wifi (CYW43455 class).
+- `wifi-troubleshooting-pi-zero2w.md` — Zero 2W series (BCM43430 class). Living log.
+- `wifi-troubleshooting-pi-zero-usb.md` — any Pi using a USB wifi dongle.
+
+Hosts, SSIDs and addresses are placeholders (`pi-4-1`, `wifi-A`, ...). Where a number comes
+from one unit only, the model file says which.
+
+## How the measurements were taken
+
+- **Link loss:** `ping -D -O -n -i 1 -I wlan0 <gateway>` for 25-30 minutes. `-D` stamps each
+  reply with epoch time so loss can be lined up with scan warnings and AP-side logs;
+  `-I wlan0` keeps ethernet out of the result. Clocks on client and AP must be in sync (check
+  chrony; a Pi that boots with an old image time steps forward once NTP arrives).
+- **Runtime-only changes, restored by a trap.** Anything that changes behavior (bgscan
+  interval, driver retry limit, band pin) is applied without touching the saved profile and
+  restored on exit. ABA order (change, restore, change) because links drift over time.
+- **Keep a second path to the box.** A test that can drop `wlan0` needs ethernet (or another
+  reachable path), or the control session dies with the test. Pause the `*/10` monitor cron
+  entry for the test and restore it from a trap, otherwise the monitor may bounce wifi mid-run.
+- **Capture on the client** (`tcpdump -i wlan0 -n -e -s 0 -w file`, installed with apt) to
+  see which frames reach the host. Compare DHCP replies against *broadcast* frames from other
+  hosts (ARP requests): broadcasts arriving while unicast replies do not separates "all
+  downlink is dead" from "unicast downlink only".
+- **AP-side counters** (station dump: tx retries, tx failed, signal, power-save bit) are
+  useful per association, but sample at 1-2 s; a 6 s sampler is too coarse for 20 s cycles.
+  Counters are cumulative since association. Do not compare `tx failed` across different
+  drivers or radios; use it against the same client's other band.
+- **Counters read from the client** (`rx_dropped` in `/sys/class/net/wlan0/statistics`) are
+  cumulative since boot. A large number there says nothing about a test unless it grows
+  during the test window.
+- `/proc/uptime` is monotonic; a wrong wall clock does not make `uptime` wrong.
+
+## NetworkManager / wpa_supplicant behavior
+
+- **Background scan.** NM passes wpa_supplicant `bgscan simple:30:-65:300` when it sees two or
+  more BSSIDs for the SSID, and `simple:30:-70:86400` for one. It is computed only when the
+  connection is activated. Below the threshold (-65 dBm) the short interval (30 s) applies.
+  On weak chipsets each scan costs seconds of loss (see the USB file). Taking the second band
+  or second AP away changes this value only at the next activation.
+- **Band pin** (`802-11-wireless.band` = `bg`/`a`). With a pin, NM only considers that band.
+  Without one it picks the strongest BSS, which is usually the 5 GHz one even when 5 GHz is
+  the worse link for that client. Falling back to the other band after 5 GHz fails took from
+  about 2 minutes to more than 5 minutes in tests; do not rely on it.
+- **NM's "secrets" wording is unreliable.** `Connection activation failed: Secrets were
+  required, but not provided` and `has security, but secrets are required` (followed by
+  `secrets exist. No new secrets needed.`) appear in nearly every activation log and say nothing
+  about the password. Two different causes were seen behind it:
+  - Weak 5 GHz: the association timed out (`association took too long`), NM moved to need-auth,
+    and a headless `sudo nmcli` has no secret agent. The password was fine (a Pi 4, see the
+    rpi4-5 file).
+  - A saved key in the wrong form for SAE (below): wpa_supplicant aborts locally with
+    `SAE: No password available`, and NM only reports `association took too long` /
+    `ssid-not-found`. The real message is visible only in wpa_supplicant's DEBUG output.
+  Rule: do not trust NM's wording; raise the supplicant log level (below) and read its lines.
+- **DHCP timeout** is 45 s. A link that associates but cannot deliver DHCP replies produces a
+  disconnect/re-associate cycle of about 46 s ("client-initiated disassoc" in the AP log).
+  `ipv4.dhcp-timeout` can be raised temporarily for a test; restore it afterwards.
+- **`ASSOC-REJECT status_code=16`** from one BSS followed by a successful join of the other
+  BSS was seen repeatedly while 802.11r was partly configured on the AP (below).
+- `bgscan simple: Failed to enable signal strength monitoring` is logged on every connect
+  (both bands, both outcomes) on at least the Pi 4. It does not distinguish good from bad
+  connections.
+- Auto-connect gives up after `connection.autoconnect-retries` (default 4) failed activations;
+  the device then stays down until something re-activates it. This is a candidate for a
+  client that vanishes after an AP-side change and does not return.
+
+## Weak 5 GHz: unicast fails, broadcast works
+
+Seen on a Pi 4 (see the rpi4-5 file for the run). Symptoms at a spot with -63 to -77 dBm on
+5 GHz (the same Pi was fine at about -57 dBm on 2.4 GHz):
+
+- Authentication and association complete, the 4-way handshake sometimes needs a second try.
+- The AP sees the client's DHCP broadcasts and the router answers, but the client never
+  receives the OFFER/ACK: in a client capture there is no DHCP reply for 60-70 s, while
+  broadcast ARP from other hosts arrives normally.
+- AP-side: about two thirds of the AP's unicast frames to the client got no 802.11 ACK in the
+  first 30 s after association (a healthy client: 0.1-0.4 % failed). The power-save bit was
+  never set, so the client was not asleep.
+- The monitor sees `ping`/`dns` failures only after DHCP fails; NM falls back to the other
+  band on its own after a few minutes, then everything is fine, which looks intermittent.
+
+Moving the same Pi next to the AP (5 GHz about -50 dBm) removed the whole pattern: DHCP in
+under 6 s, 40 of 40 gateway probes answered, 0 of 47 AP frames failed in the first 30 s.
+Things that did **not** change the result at the weak spot: `bgscan` off, power save
+explicitly off, regulatory-domain changes (the brcmfmac PHY is self-managed, `country 99`).
+
+Rule of thumb from this fleet: where a client's 5 GHz signal at the AP is weaker than about
+-63 dBm, pin the client to 2.4 GHz. Check the client's own `iw dev wlan0 link` signal *and*
+the AP's view.
+
+## AP-side changes that affect clients
+
+- Removing 802.11r from a SSID that clients were already joined to: clients with profiles that
+  list `FT-PSK`/`FT-SAE` fall back to the plain PSK or SAE paths; those worked once reconnected.
+- Switching a band to `sae-mixed` (WPA2-PSK and SAE both accepted): wpa_supplicant 2.10 clients
+  that try SAE against an AP set to H2E-only can fail to join where PSK would have worked.
+  One client (USB dongle, see the USB file) disappeared at the moment of such a change and had
+  not returned hours later. Cause not established.
+- Do the AP change when a console or ethernet path exists to the client; headless Pis with only
+  wifi cannot be repaired remotely.
+
+## Monitor script (`auto-fix-wifi.sh`) lessons
+
+Recorded in detail in the Zero 2W file and the USB file; the short version:
+
+- Failure of a layer-7 check alone (HTTP) must never trigger a reboot: it only logs a warning.
+- A recheck after the retries, and several probes per attempt, avoid fixes triggered by a
+  single scan window or a lost packet.
+- A fix (bounce, module reload, reboot) does not cure a bad radio link; it costs minutes of
+  outage. Compare `actions.log` counts per day before and after a change to judge it.
+- Module reload must unload dependent modules first (`brcmfmac_cyw`, `brcmfmac_wcc`).
+
+## WPA3 / SAE: why some clients vanished after the AP went `sae-mixed` (2026-10)
+
+**What the terms mean.**
+- WPA2-PSK (what these Pis use): the password becomes a key; anyone who records the connection
+  handshake can guess passwords offline, and a leaked password also decrypts older recordings.
+- WPA3-SAE: a password-authenticated key exchange. Guessing needs one interaction with the AP per
+  try, recordings stay unreadable after a later leak, and it requires protected management frames.
+- `sae-mixed` (transition mode): the AP accepts both WPA2-PSK and SAE clients. It migrates clients
+  without cutting anyone off, but the weakest allowed mode still sets the network's strength; the
+  real gain comes from SAE-only, or from putting WPA2-only clients on their own SSID.
+
+**Symptom.** Right after the AP's SSID changed to `sae-mixed` (and 802.11r was removed), three Pis
+with USB dongles lost wifi and never came back: the monitor rebooted one four times, then hit its
+daily cap and logged `needs human attention`. An over-the-air monitor heard only probe requests
+from them for hours, with no Authentication frames at all. The AP's own log showed a disconnect at
+the moment of the change and nothing after. Each dmesg showed one last AP-side reject
+(`denied association (code=43)`, invalid AKM) as the FT-PSK key type disappeared from the BSS.
+
+**Root cause (confirmed on all three, AP behaved correctly).**
+1. The wifi password was saved in the NM profile as a **64-character hex key**, not as text. The
+   source is the Raspberry Pi Imager customization: it writes the pre-hashed key into
+   `/boot/firmware/network-config` (cloud-init seed), cloud-init renders it into netplan, and NM
+   builds the profile from that.
+2. A 64-hex key is enough for WPA2-PSK but cannot be used for SAE, which needs the text password.
+3. NM builds the supplicant's key-management list from what the supplicant reports for that
+   interface. On the dongle Pis it includes `SAE FT-SAE`, and wpa_supplicant prefers SAE whenever the
+   BSS offers it. Before the AP change the BSS offered only PSK, so it worked.
+4. wpa_supplicant 2.10 then logs `Using SAE auth_alg` ... `SAE: No password available`, drops the BSS
+   on its ignore list (`CTRL-EVENT-SSID-TEMP-DISABLED reason=CONN_FAILED`) and never transmits an
+   Authentication frame. The NM auto-connect then repeats about every 26 s.
+
+**How to check a Pi (no secrets printed).**
+- `nmcli -s -g 802-11-wireless-security.psk connection show <profile> | tr -d '\n' | wc -c` prints
+  the length: 64 (and only hex digits) means the hashed form, 8-63 means text.
+- Which key types NM offers: journal line `Config: added 'key_mgmt' value '...'` — look for `SAE`.
+- What the supplicant can do on that interface: `busctl --system get-property fi.w1.wpa_supplicant1
+  <iface path> fi.w1.wpa_supplicant1.Interface Capabilities` and look for `sae` under `KeyMgmt`.
+- Why a join fails: `wpa_cli -i wlan0 log_level DEBUG`, trigger one activation, read the lines
+  (`Using SAE auth_alg`, `SAE: No password available`); put the level back to `INFO` afterwards.
+  The debug output also dumps neighbors' SSIDs/BSSIDs: filter before sharing or committing.
+
+**Fix.** Store the password as text in the profile. The hashed key can be verified against the
+typed password before replacing it (`wpa_passphrase <ssid>` of the typed text must equal the stored
+hex), so a typo cannot overwrite a working key. After the change the dongle Pis join with
+`key_mgmt=SAE`: the 2.4 GHz BSS's SAE exchange takes about 90 ms, tested on `rt2800usb` (two Pis)
+and `rtl8192cu`. `pmf=disable` in the profile does **not** remove SAE from the list and does not help.
+Pitfalls hit while doing this:
+- `nmcli connection edit` echoes the commands it reads, including `set wifi-sec.psk <password>`.
+  A script that logs the editor's output leaks the password into the log. Filter that line before
+  logging or printing (the repo does not ship such a script; the one used here was a one-off).
+- Reading the stored key back immediately after the save once returned an empty value (the
+  profile was being regenerated by netplan); read it again after a few seconds before concluding.
+- The Imager seed on the boot partition still contains the hashed form. cloud-init normally applies
+  network config only for a new instance, so a reboot keeps the fix; a reflash brings the hex back.
+  For new images, set the wifi password as text after first boot, or use a profile that carries it
+  as text.
+
+**Which hardware can use SAE here** (what the supplicant reports for the interface, read with
+`busctl` as above):
+
+| Device | Wifi hardware | `sae` in supplicant KeyMgmt | Result |
+|---|---|---|---|
+| `pi-model-b-1` | Pi Model B, `rt2800usb` dongle | yes | SAE works after text password |
+| `pi-2-1` | Pi 2 Model B, `rt2800usb` dongle | yes | SAE works after text password |
+| `pi-b-plus-1` | Pi Model B+, `rtl8192cu` dongle | yes | SAE works after text password |
+| `pi-4-1` | Pi 4, built-in brcmfmac | no | WPA2-PSK only (text password already) |
+| `pi-zero-1` | Zero 2W, built-in brcmfmac | no | WPA2-PSK only, joins a WPA2-only SSID |
+| `pi-zero-2` | Zero 2W, built-in brcmfmac | no | WPA2-PSK only (text password); survived the AP change, joins with `WPA2-PSK-SHA256` |
+| `pi-zero-3` | Pi Zero, `rtl8192cu` dongle | yes | already on SAE with a text password; survived the AP change |
+
+For the brcmfmac Pis, `iw phy` reports "Device supports SAE with AUTHENTICATE command", yet the
+supplicant's per-interface capabilities (what NM reads) lack `sae`; why was not determined, and
+whether SAE would work if forced is untested.
+
+**Implication for migrating to SAE-only.** The dongle Pis can do it once their password is stored
+as text; the built-in-brcmfmac Pis in this fleet cannot (with this kernel/firmware), so they belong
+on a WPA2-only SSID. When the AP side is H2E-only (`sae_pwe`), check each client first; all three
+dongle Pis completed SAE against an H2E-only BSS.
+
+**Same incident, other findings.**
+- A wedged `rtl8192cu` scan (0 networks, `iw scan` hangs) recurred on one Pi right after the
+  profile fix. Reloading the module cures it (see the USB file); do not conclude from "0 BSSes" that
+  SAE failed.
+- A client's own `iw` signal and the AP's station reading for it differ by 20+ dB on the dongle Pis
+  (antenna and scale); compare like with like.
+- The monitor's behavior was correct throughout: bounded reboots, then `needs human attention`.
+  Fix actions cannot repair a profile problem, so it keeps logging until the profile is fixed.
+- `pkill -f <pattern>` inside `sudo sh -c '...'` matches its own shell (the pattern is on its own
+  command line); use `pgrep -x`/a script file or a PID.
