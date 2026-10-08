@@ -26,6 +26,16 @@
 #     reload can't fix an upstream/firewall problem, and reload loops drop
 #     the client from the AP every cycle. HTTP_CHECK_URL empty = skip HTTP.
 #   - On failure: wait 10s, retry the whole battery, up to RETRY_COUNT times.
+#   - Each attempt is not a single packet: the ping check sends up to
+#     PING_COUNT probes (default 3, 1 s apart, stops at the first reply) and
+#     the dig check uses DNS_TRIES (default 2). A link with a few percent
+#     random loss fails a one-packet check about 1 time in 12.
+#   - If every attempt failed, wait RECHECK_WAIT seconds (default 45, 0 = off)
+#     and run the battery once more before touching anything. Some USB wifi
+#     dongles go off-channel for a background scan (wpa_supplicant bgscan)
+#     and lose a third to a half of their traffic for ~25-30 s; the retries
+#     above span only ~35 s, so all of them can land inside one scan and
+#     look like a dead link. The recheck falls outside that window.
 #   - If still failing: try a scoped wifi-only fix (disconnect + reload wifi
 #     driver module + reconnect). If that doesn't recover it, escalate to a
 #     full fix (stop NetworkManager, reload module, start NetworkManager).
@@ -324,7 +334,10 @@ EOF
   fi
   conf_default RETRY_COUNT "3"
   conf_default RETRY_WAIT "10"
+  conf_default RECHECK_WAIT "45"
   conf_default PING_TIMEOUT "2"
+  conf_default PING_COUNT "3"
+  conf_default DNS_TRIES "2"
   conf_default HTTP_TIMEOUT "5"
   conf_default MODULE_RELOAD_WAIT "5"
   conf_default IFACE_WAIT_MAX "15"
@@ -342,7 +355,21 @@ load_config() {
   HTTP_CHECK_URL=$(conf_get HTTP_CHECK_URL)
   RETRY_COUNT=$(conf_get RETRY_COUNT)
   RETRY_WAIT=$(conf_get RETRY_WAIT)
+  # Built-in default applies even if the key is missing/empty/non-numeric.
+  RECHECK_WAIT=$(conf_get RECHECK_WAIT)
+  case "$RECHECK_WAIT" in
+    ''|*[!0-9]*) RECHECK_WAIT=45 ;;
+  esac
   PING_TIMEOUT=$(conf_get PING_TIMEOUT)
+  # Built-in defaults apply even if the key is missing/empty/non-numeric/0.
+  PING_COUNT=$(conf_get PING_COUNT)
+  case "$PING_COUNT" in
+    ''|*[!0-9]*|0) PING_COUNT=3 ;;
+  esac
+  DNS_TRIES=$(conf_get DNS_TRIES)
+  case "$DNS_TRIES" in
+    ''|*[!0-9]*|0) DNS_TRIES=2 ;;
+  esac
   HTTP_TIMEOUT=$(conf_get HTTP_TIMEOUT)
   MODULE_RELOAD_WAIT=$(conf_get MODULE_RELOAD_WAIT)
   IFACE_WAIT_MAX=$(conf_get IFACE_WAIT_MAX)
@@ -406,13 +433,19 @@ check_ping() {
     log_detail "ping check: skipped, no GATEWAY_IP configured"
     return 1
   fi
-  if ping -I "$WIFI_IFACE" -c 1 -W "$PING_TIMEOUT" "$GATEWAY_IP" >>"$DETAIL_LOG" 2>&1; then
-    log_detail "ping check: OK ($GATEWAY_IP via $WIFI_IFACE)"
-    return 0
-  else
-    log_detail "ping check: FAILED ($GATEWAY_IP via $WIFI_IFACE)"
-    return 1
-  fi
+  # up to PING_COUNT single-packet probes 1 s apart; the first reply passes
+  # (early exit keeps healthy runs fast, spacing rides out short loss bursts)
+  probe=1
+  while [ "$probe" -le "$PING_COUNT" ]; do
+    if ping -I "$WIFI_IFACE" -c 1 -W "$PING_TIMEOUT" "$GATEWAY_IP" >>"$DETAIL_LOG" 2>&1; then
+      log_detail "ping check: OK ($GATEWAY_IP via $WIFI_IFACE, probe $probe/$PING_COUNT)"
+      return 0
+    fi
+    if [ "$probe" -lt "$PING_COUNT" ]; then sleep 1; fi
+    probe=$((probe + 1))
+  done
+  log_detail "ping check: FAILED ($GATEWAY_IP via $WIFI_IFACE, no reply to $PING_COUNT probes)"
+  return 1
 }
 
 check_dns() {
@@ -425,11 +458,11 @@ check_dns() {
       return 1
     fi
     if [ -n "$DNS_SERVER" ]; then
-      if dig -b "$src_ip" "@$DNS_SERVER" +time=3 +tries=1 +short "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1; then
-        log_detail "dns check: OK (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip)"
+      if dig -b "$src_ip" "@$DNS_SERVER" +time=3 +tries="$DNS_TRIES" +short "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1; then
+        log_detail "dns check: OK (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES)"
         return 0
       else
-        log_detail "dns check: FAILED (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip)"
+        log_detail "dns check: FAILED (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES)"
         return 1
       fi
     fi
@@ -562,7 +595,7 @@ reload_wifi_module() {
 }
 
 fix_wifi_only_bounce() {
-  log_action warning "checks failed $RETRY_COUNT times; attempting scoped wifi-only fix (disconnect + reload $WIFI_DRIVER + reconnect) on $WIFI_IFACE"
+  log_action warning "checks failed $RETRY_COUNT times and on recheck; attempting scoped wifi-only fix (disconnect + reload $WIFI_DRIVER + reconnect) on $WIFI_IFACE"
   nmcli device disconnect "$WIFI_IFACE" >>"$DETAIL_LOG" 2>&1 || true
   reload_wifi_module || true
   ip link set "$WIFI_IFACE" up >>"$DETAIL_LOG" 2>&1 || true
@@ -746,8 +779,24 @@ while [ "$attempt" -le "$RETRY_COUNT" ]; do
   attempt=$((attempt + 1))
 done
 
+rechecked=0
+if [ "$passed" != "1" ] && [ "$RECHECK_WAIT" -gt 0 ]; then
+  # all attempts failed: before bouncing anything, look again after the time a
+  # background wifi scan takes (see header). Transient outages end here.
+  log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts; rechecking once after ${RECHECK_WAIT}s before attempting a fix"
+  log_detail "recheck: waiting ${RECHECK_WAIT}s"
+  sleep "$RECHECK_WAIT"
+  log_detail "check cycle recheck"
+  rechecked=1
+  if run_cycle; then
+    passed=1
+  fi
+fi
+
 if [ "$passed" = "1" ]; then
-  if [ "$HTTP_RES" = "FAIL" ]; then
+  if [ "$rechecked" = "1" ]; then
+    log_syslog warning "check OK on recheck ($WIFI_IFACE): $(results) -- $RETRY_COUNT attempts failed, link recovered within ${RECHECK_WAIT}s without a fix (transient, e.g. background scan)"
+  elif [ "$HTTP_RES" = "FAIL" ]; then
     # link is fine, only the HTTP target failed: warn, do NOT touch the driver
     log_syslog warning "check OK with warning ($WIFI_IFACE): $(results) -- link-level checks pass, HTTP target ($HTTP_CHECK_URL) failing; not attempting a fix (check HTTP_CHECK_URL is reachable from this network)"
   else
@@ -757,7 +806,7 @@ if [ "$passed" = "1" ]; then
   exit 0
 fi
 
-log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts; attempting fix"
+log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts and a recheck after ${RECHECK_WAIT}s; attempting fix"
 
 fix_wifi_only_bounce
 if run_cycle; then

@@ -75,6 +75,55 @@ the device only — never written to any file in this repo.
    not apply here. Look for `rtl8192cu`/`rtlwifi`-specific power-save or roaming
    options instead.
 
+## Lossy link and background-scan outages (Pi Model B, `rt2800usb` dongle, 2026-10)
+
+Device `pi-model-b-1`: Raspberry Pi Model B (armv6l, no onboard wifi) with a
+Ralink/Samsung `rt2800usb` 802.11abgn USB dongle, NetworkManager, AP `wifi-A` on
+2.4 GHz channel 11. Signal was a strong -47 to -52 dBm throughout. A second Pi on
+the same gateway with built-in `brcmfmac` wifi (`pi-builtin-1`) was the control and lost
+0 of about 5000 pings over the same windows.
+
+**Symptom:** `auto-fix-wifi.sh` occasionally bounced the wifi, once costing a 2m13s
+outage, although the AP saw a healthy client. The AP's own log showed a client-side
+disconnect with no deauth and no timeout, i.e. the monitor itself caused it.
+
+**Measurements** (1 Hz ping to the gateway bound to `wlan0`, plus AP-side station
+counters recorded in parallel, 25-30 minute runs):
+
+| Run | Change | Lost | Notes |
+|---|---|---|---|
+| 1 | baseline (a display service running) | 14.1% | scan windows 34% lost, outside 11.4% |
+| 2 | display service stopped | 7.7% | outside scans 5.5% |
+| 3 | dongle on a USB extension cable | 9.3% | outside scans 6.1% |
+| 4 | background scanning set to 3600 s (runtime only) | 8.5% | no scans; longest burst 3 pings |
+| 5 | driver retry limit 2 -> 7/4 (ABA, runtime only) | 8.7% / 7.7% / 14.5% | no effect; the link drifts over time |
+
+**Findings**
+- NetworkManager hands wpa_supplicant `bgscan simple:30:-65:300` when it sees more than one BSSID
+  for the SSID (here a 2.4 GHz and a 5 GHz BSS). At good signal that is a background scan
+  every 300 s; with the scan itself (~22 s) the cadence was 322 s.
+- Each scan is a 25-30 s window in which a third to half of the pings are lost, and the
+  kernel logs a `mac80211` `ieee80211_calc_hw_conf_chan` warning when the scan *completes*
+  (it is a widely reported warning on this scan path, not specific to this device). The AP
+  sees the client toggle its power-save bit only around scans.
+- The monitor's three retries span about 35 s, so all of them can land inside one scan and
+  look like a dead link. Of three failing runs one morning, two overlapped a scan completion
+(one of them led to a bounce); the other two recovered on their own by the third retry.
+- Scans are only part of the loss: with scans off, 6-9% of pings were still lost, with
+  replies often ~120 ms late. Hardware looked healthy (no under-voltage, no USB errors,
+  USB at 480 Mb/s, 48 degC). Stopping the display service and the extension cable each
+  roughly halved the baseline loss; the driver retry limit made no difference.
+- The AP's retry counters did not separate this device from the control, so they
+  are a poor indicator of a client's problem.
+
+**What changed in the monitor**
+- A recheck `RECHECK_WAIT` (default 45 s) after all retries fail, before any fix.
+- Each attempt sends up to `PING_COUNT` pings (default 3) and `dig` uses `DNS_TRIES`
+  (default 2).
+A bounce does not cure baseline loss and costs minutes of outage, so false triggers are
+worth avoiding. Options not taken: locking to one BSSID (stops failover to another AP),
+changing bands (the 5 GHz BSS is weaker at the install location), cabling.
+
 ## Related scripts (this dir)
 
 - `wifi-usb-diag.sh` — driver-agnostic diagnostic dump for USB wifi/ethernet dongle
