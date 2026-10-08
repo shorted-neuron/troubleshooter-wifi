@@ -89,9 +89,42 @@ under 6 s, 40 of 40 gateway probes answered, 0 of 47 AP frames failed in the fir
 Things that did **not** change the result at the weak spot: `bgscan` off, power save
 explicitly off, regulatory-domain changes (the brcmfmac PHY is self-managed, `country 99`).
 
-Rule of thumb from this fleet: where a client's 5 GHz signal at the AP is weaker than about
--63 dBm, pin the client to 2.4 GHz. Check the client's own `iw dev wlan0 link` signal *and*
-the AP's view.
+Rule of thumb from this fleet (softened after a second Pi 4): a weak 5 GHz signal at the AP
+(-63 dBm or worse) makes the first seconds-to-minutes after a 5 GHz association unreliable. The
+AP's unicast frames fail at a high rate then and recover as traffic flows. How bad it gets is
+unit-specific, not a fixed threshold:
+
+| Device (Pi 4, same firmware) | AP-side 5 GHz signal | AP->client frames failed |
+|---|---|---|
+| `pi-4-1` (failing spot) | -63 to -77 dBm | 2/3 in the first 30 s, 26 % over the test, DHCP never completed for ~70 s |
+| `pi-4-2` (stable for 15 h) | -69 to -77 dBm, average -71 | about 11 % in the first minutes after association, then about 2 %; 2.5 % over 15 h, 0 % loss on a 30-ping test |
+
+Other clients, AP-side counters (cumulative since association, all at or stronger than -52 dBm
+unless noted), for scale: a Zero 2W with built-in brcmfmac (`pi-zero-2`) loses a steady 9 % of AP
+frames, before and after the AP change, not front-loaded; a Pi 2 with an `mt7601u` dongle (`pi-2-2`)
+a steady 4.5 %; a dongle Pi at -77 dBm on 2.4 GHz lost 0.04 %; a Pi 5 at -43 dBm lost 0 %. Per-device
+loss at a given signal varies by an order of magnitude, so judge each device by its own counters.
+
+So signal alone does not predict the problem; `pi-4-2` may cope better because of its placement,
+antenna or lighter traffic. Practical guidance: if a client's first connection after a band change
+is slow or DHCP stalls, pin it to 2.4 GHz and look at the AP-side failed/retry counters for that
+client right after association (not only the long-run average). Check the client's own `iw dev
+wlan0 link` signal *and* the AP's view; the two can differ by 20 dB on dongles.
+
+## A client can stay "connected" to an AP that has forgotten it (2026-10)
+
+After the AP's 5 GHz radio was reloaded, a Pi 5 (`pi-5-1`) kept showing `wpa_state=COMPLETED` for
+about 54 minutes while the AP no longer had it associated. wpa_supplicant logged no disconnect at
+all. The first sign was NetworkManager's DHCP lease renewal at the next T1 boundary: no reply for
+45 s, `ip-config-unavailable`, a local disconnect, rescan, rejoin within 8 s. Another Pi 4 on the
+same BSS noticed within three minutes, so it is not universal. A likely cause (unproven) is that the
+association uses protected management frames, so the unprotected "you are not associated" frame the
+AP sends after a restart is ignored.
+
+Consequences: the supplicant state is not proof of connectivity; only an end-to-end check is. This is
+the case the `auto-fix-wifi.sh` ping check exists for: with it installed the outage would have been
+cut to about one cron cycle. Without a monitor, a client can be offline for as long as the lease
+interval.
 
 ## AP-side changes that affect clients
 
@@ -114,6 +147,10 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
 - A fix (bounce, module reload, reboot) does not cure a bad radio link; it costs minutes of
   outage. Compare `actions.log` counts per day before and after a change to judge it.
 - Module reload must unload dependent modules first (`brcmfmac_cyw`, `brcmfmac_wcc`).
+- Do not install the monitor on a Pi that has no wifi interface (wired-only, or a failed dongle).
+  It tests `wlan0`, finds it missing, and runs the fix path (NM restarts, module reloads) against
+  hardware that is not there, which on a wired server only causes harm. A small follow-up could make
+  the script stay quiet when the configured interface does not exist.
 
 ## WPA3 / SAE: why some clients vanished after the AP went `sae-mixed` (2026-10)
 
@@ -184,6 +221,9 @@ Pitfalls hit while doing this:
 | `pi-zero-1` | Zero 2W, built-in brcmfmac | no | WPA2-PSK only, joins a WPA2-only SSID |
 | `pi-zero-2` | Zero 2W, built-in brcmfmac | no | WPA2-PSK only (text password); survived the AP change, joins with `WPA2-PSK-SHA256` |
 | `pi-zero-3` | Pi Zero, `rtl8192cu` dongle | yes | already on SAE with a text password; survived the AP change |
+| `pi-2-2` | Pi 2 Model B, `mt7601u` dongle | yes | already on SAE with a text password; survived the AP change |
+| `pi-4-2` | Pi 4, built-in brcmfmac | no | WPA2-PSK only (text password); stable on 5 GHz |
+| `pi-5-1` | Pi 5, built-in brcmfmac | no | WPA2-PSK only (text password), 5 GHz; see the silent-association note |
 
 For the brcmfmac Pis, `iw phy` reports "Device supports SAE with AUTHENTICATE command", yet the
 supplicant's per-interface capabilities (what NM reads) lack `sae`; why was not determined, and

@@ -142,6 +142,23 @@ Dongle-specific notes from the incident:
 - `pi-b-plus-1` and `pi-2-1` had no `auto-fix-wifi.sh` before; installed with `install.sh` once they
   were back (driver autodiscovered as `rtl8192cu` / `rt2800usb`).
 
+## Failed dongle, and removing an unused one (2026-10)
+
+- **A defective `rtl8192cu` dongle** (`pi-b-plus-2`, wired Pi that was to gain wifi): after plugging it in
+  the Pi got very slow, the kernel logged `usbctrl_vendorreq TimeOut` / `Urb has error status` and then
+  `USB disconnect`; `lsusb` no longer listed it and no `wlan0` existed. The dongle was very hot to touch.
+  Treated as a hardware fault (not a driver or power-budget issue on a B+ with one other device) and not
+  reused; the Pi stays on ethernet. A monitor that was run by hand against the missing interface restarted
+  NetworkManager twice and left a stale failure counter; remove the monitor files from such a Pi.
+- **Removing wifi from a wired DNS/NTP server** that also had a dongle (`pi-2-3`, Bullseye, dhcpcd +
+  wpa_supplicant, keepalived on `eth0` only): first checked that VRRP, the DNS listener interface and every
+  address in use were on `eth0`; took `wlan0` down at runtime and held it 10 minutes (DNS on the virtual and
+  real addresses, NTP stratum, keepalived transitions, default route count all checked once a minute); then
+  removed the `interface wlan0` stanza from `/etc/dhcpcd.conf` and added `denyinterfaces wlan0`, moved the
+  hashed-key `wpa_supplicant.conf` out of `/etc` into a root-only backup, and unplugged the dongle. The
+  driver was deliberately not blacklisted. Do all of it over the wired interface, with a rollback path
+  (restore the two files, `modprobe`/`dhcpcd -n wlan0`, or replug).
+
 ## Related scripts (this dir)
 
 - `wifi-usb-diag.sh` — driver-agnostic diagnostic dump for USB wifi/ethernet dongle

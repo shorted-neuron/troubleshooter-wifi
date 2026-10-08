@@ -1,8 +1,8 @@
 # Wifi Troubleshooting — Pi 4 / Pi 5 (built-in wifi, brcmfmac CYW43455 class)
 
 Model-specific log. General method and NM behavior: `wifi-troubleshooting-general.md`.
-Only the Pi 4 has been measured so far; no Pi 5 data yet, so everything below is Pi 4
-(`pi-4-1`) unless stated otherwise.
+The Pi 4 (`pi-4-1`, `pi-4-2`) has been measured in detail; one Pi 5 (`pi-5-1`) has only been
+surveyed (below). Everything else is Pi 4 (`pi-4-1`) unless stated otherwise.
 
 ## Environment (`pi-4-1`)
 
@@ -53,8 +53,11 @@ NM activated in 6 s with a DHCP lease, 40 of 40 probes (one per 0.5 s) answered,
 0 retries and 0 failed in the first 30 s (47 frames) and nothing afterwards. 2.4 GHz at that
 spot: -34 dBm.
 
-**Conclusion.** The failure follows 5 GHz signal at the Pi's usual spot, about 15-20 dB
-below the working one, not the AP, router, DHCP, power save, `bgscan` or regulatory domain.
+**Conclusion.** The failure follows the 5 GHz link at the Pi's usual spot (AP-side -63 to -77 dBm,
+about 15-20 dB below the working one), not the AP, router, DHCP, power save, `bgscan` or regulatory
+domain. A second Pi 4 (`pi-4-2`, same firmware) at a similar AP-side level (about -71 dBm average)
+stayed connected for 15 h with 2.5 % of AP frames failed, so signal strength alone is not the whole
+explanation (see the table in the general file).
 Not shown: why the loss is nearly total instead of a slow link. No kernel/firmware message
 pointed to a cause (the journal only had `brcmf_cfg80211_scan: Scanning suppressed:
 status (4)` while the supplicant retried scans during association).
@@ -80,8 +83,17 @@ text) and by the AP change. `iw phy` says "Device supports SAE with AUTHENTICATE
 claims support; the supplicant simply does not enable it here. A fleet with an SAE-only SSID needs
 a WPA2-only SSID for this Pi. Details and the capability table: `wifi-troubleshooting-general.md`.
 
+## Pi 5 (`pi-5-1`) survey (2026-10)
+
+Raspberry Pi 5 Model B Rev 1.1, Raspberry Pi OS 13 (trixie), up 9 weeks, built-in brcmfmac with the
+same firmware string as the Pi 4s (`01-b677b91b`), NetworkManager 1.52, wpa_supplicant 2.10. It joins the
+5 GHz BSS at about -55 dBm client-side (AP-side -43 dBm) with `WPA2-PSK-SHA256` and a text password, and
+the supplicant does not list `sae` (same as the Pi 4). The AP saw 0 failed frames out of about 7.5 k
+over 16 hours, so no 5 GHz problem here. One incident: after the AP's radio reload this Pi stayed
+"connected" for about 54 minutes while the AP had forgotten it; see "A client can stay connected to
+an AP that has forgotten it" in `wifi-troubleshooting-general.md`. The monitor was installed afterwards.
+
 ## Open items
 
-- No Pi 5 measurements. Expect the same `CYW43455` class radio but confirm before reusing
-  the 2.4 GHz rule of thumb.
+- Only one Pi 5, and only surveyed, not stress-tested; its behavior at a weak 5 GHz spot is unknown.
 - Check whether a second Pi 4 at a weaker or better spot shows the same -63 dBm cliff.
