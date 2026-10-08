@@ -62,6 +62,9 @@ from one unit only, the model file says which.
   `ipv4.dhcp-timeout` can be raised temporarily for a test; restore it afterwards.
 - **`ASSOC-REJECT status_code=16`** from one BSS followed by a successful join of the other
   BSS was seen repeatedly while 802.11r was partly configured on the AP (below).
+  On brcmfmac the status code and the BSSID in the driver's connect event are unreliable (a rejected SAE
+  association showed `status_code=16` and the other band's BSSID while the AP actually answered status 1
+  on the intended BSS); check the AP log or a capture before drawing conclusions from them.
 - `bgscan simple: Failed to enable signal strength monitoring` is logged on every connect
   (both bands, both outcomes) on at least the Pi 4. It does not distinguish good from bad
   connections.
@@ -217,22 +220,43 @@ Pitfalls hit while doing this:
 | `pi-model-b-1` | Pi Model B, `rt2800usb` dongle | yes | SAE works after text password |
 | `pi-2-1` | Pi 2 Model B, `rt2800usb` dongle | yes | SAE works after text password |
 | `pi-b-plus-1` | Pi Model B+, `rtl8192cu` dongle | yes | SAE works after text password |
-| `pi-4-1` | Pi 4, built-in brcmfmac | no | WPA2-PSK only (text password already) |
-| `pi-zero-1` | Zero 2W, built-in brcmfmac | no | WPA2-PSK only, joins a WPA2-only SSID |
-| `pi-zero-2` | Zero 2W, built-in brcmfmac | no | WPA2-PSK only (text password); survived the AP change, joins with `WPA2-PSK-SHA256` |
+| `pi-4-1` | Pi 4, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); SAE works if forced, see below |
+| `pi-zero-1` | Zero 2W, built-in brcmfmac | not offered by NM | WPA2-PSK in use, joins a WPA2-only SSID; forced SAE untested |
+| `pi-zero-2` | Zero 2W, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); survived the AP change; forced SAE untested |
 | `pi-zero-3` | Pi Zero, `rtl8192cu` dongle | yes | already on SAE with a text password; survived the AP change |
 | `pi-2-2` | Pi 2 Model B, `mt7601u` dongle | yes | already on SAE with a text password; survived the AP change |
-| `pi-4-2` | Pi 4, built-in brcmfmac | no | WPA2-PSK only (text password); stable on 5 GHz |
-| `pi-5-1` | Pi 5, built-in brcmfmac | no | WPA2-PSK only (text password), 5 GHz; see the silent-association note |
+| `pi-4-2` | Pi 4, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password); stable on 5 GHz; forced SAE works with `sae_pwe=1` (tested, 2.4 GHz) |
+| `pi-5-1` | Pi 5, built-in brcmfmac | not offered by NM | WPA2-PSK in use (text password), 5 GHz; forced SAE untested; see the silent-association note |
 
-For the brcmfmac Pis, `iw phy` reports "Device supports SAE with AUTHENTICATE command", yet the
-supplicant's per-interface capabilities (what NM reads) lack `sae`; why was not determined, and
-whether SAE would work if forced is untested.
+**Table heading note.** "Offered by NM" means wpa_supplicant lists `sae` in the interface's `KeyMgmt`
+capabilities. That is yes for the dongle Pis (their drivers run SAE through mac80211). For the
+built-in brcmfmac Pis it is no, so NetworkManager never adds `SAE` to a `wpa-psk` profile and they stay on
+WPA2-PSK even though the SSID is `sae-mixed`.
 
-**Implication for migrating to SAE-only.** The dongle Pis can do it once their password is stored
-as text; the built-in-brcmfmac Pis in this fleet cannot (with this kernel/firmware), so they belong
-on a WPA2-only SSID. When the AP side is H2E-only (`sae_pwe`), check each client first; all three
-dongle Pis completed SAE against an H2E-only BSS.
+**brcmfmac can still do SAE, if told to (tested on a Pi 4).** `iw phy` says "Device supports SAE
+with AUTHENTICATE command" and the kernel hands SAE to userspace (external auth). With a cloned
+temporary profile forced to `key-mgmt=sae` on the 2.4 GHz BSS:
+1. wpa_supplicant 2.10 ran the SAE exchange (commit and confirm both with status 0) but derived the
+   password element the old way (hunting-and-pecking), while the association request advertised
+   support for the newer hash-to-element (H2E) method.
+2. hostapd with `sae_pwe=2` (H&P and H2E both allowed) has an anti-downgrade check and refused the
+   association: `SAE: <mac> indicates support for SAE H2E, but did not use it`, response status 1
+   ("Unspecified failure"). The client's own log showed `ASSOC-REJECT status_code=16` and a different
+   BSSID in that event; that status and BSSID are not reliable on brcmfmac, trust AP-side logs/captures.
+3. With the supplicant's global `sae_pwe` set to 1 at runtime (`wpa_cli -i wlan0 set sae_pwe 1`) it
+   derived the element via H2E ("Derive PT", "Derive PWE from PT"), the AP accepted, NM reported the
+   device connected with `key_mgmt=SAE`, and 5 of 5 gateway pings were answered.
+So the AP setting `sae_pwe=2` is correct; no AP change is needed. The dongle Pis never hit this
+because their normal SME path uses H2E automatically. Not tested: the Zero 2W and the Pi 5, and a
+persistent way to set `sae_pwe` (for example a systemd oneshot that runs the `wpa_cli` command after
+`wpa_supplicant` and `NetworkManager` are up; `wpa_cli set` is runtime-only).
+
+**Implication for migrating to SAE-only.** The dongle Pis can do it once their password is stored as
+text. The brcmfmac Pis can too, but only with an explicit `key-mgmt=sae` profile plus `sae_pwe=1` in the
+supplicant, which is a client-side change per Pi and not yet made persistent; until then they belong on
+a WPA2-only SSID (or stay on `sae-mixed`, where they keep joining with WPA2-PSK). Do not change the AP's
+`sae_pwe` to suit them: `0` (H&P only) removes the downgrade check, `1` (H2E only) would reject
+H&P-only clients.
 
 **Same incident, other findings.**
 - A wedged `rtl8192cu` scan (0 networks, `iw scan` hangs) recurred on one Pi right after the

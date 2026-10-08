@@ -77,11 +77,17 @@ per day is the number to compare.
 ## SAE / WPA3 on this chip
 
 wpa_supplicant 2.10 on this Pi does not list `sae` in its per-interface KeyMgmt capabilities (the
-dongle Pis do), so NM never offers SAE and the profile joins with `WPA2-PSK-SHA256` even though the
-AP is `sae-mixed`. This Pi was unaffected by the Imager-hashed-key problem (its saved password is
-text) and by the AP change. `iw phy` says "Device supports SAE with AUTHENTICATE command", so the chip
-claims support; the supplicant simply does not enable it here. A fleet with an SAE-only SSID needs
-a WPA2-only SSID for this Pi. Details and the capability table: `wifi-troubleshooting-general.md`.
+dongle Pis do), so NM never offers SAE and the profile joins with `WPA2-PSK-SHA256` even though the AP is
+`sae-mixed`. This Pi was unaffected by the Imager-hashed-key problem (its saved password is text) and by
+the AP change.
+
+SAE does work on this chip when forced (tested on `pi-4-2`, 2.4 GHz BSS, temporary cloned profile with
+`key-mgmt=sae`): the kernel hands SAE to userspace, wpa_supplicant 2.10 completes the exchange, but by
+default derives the password element with hunting-and-pecking while the association advertises H2E. The
+AP (`sae_pwe=2`) then refuses the association with status 1 ("indicates support for SAE H2E, but did not
+use it"). Setting the supplicant's `sae_pwe` to 1 at runtime fixed it: SAE connected, `key_mgmt=SAE`, 0 %
+loss over a short ping test. Details and the open items (persistence, Zero 2W/Pi 5 untested):
+`wifi-troubleshooting-general.md`.
 
 ## Pi 5 (`pi-5-1`) survey (2026-10)
 
