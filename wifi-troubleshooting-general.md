@@ -247,13 +247,15 @@ temporary profile forced to `key-mgmt=sae` on the 2.4 GHz BSS:
    derived the element via H2E ("Derive PT", "Derive PWE from PT"), the AP accepted, NM reported the
    device connected with `key_mgmt=SAE`, and 5 of 5 gateway pings were answered.
 So the AP setting `sae_pwe=2` is correct; no AP change is needed. The dongle Pis never hit this
-because their normal SME path uses H2E automatically. Not tested: the Zero 2W and the Pi 5, and a
-persistent way to set `sae_pwe` (for example a systemd oneshot that runs the `wpa_cli` command after
-`wpa_supplicant` and `NetworkManager` are up; `wpa_cli set` is runtime-only).
+because their normal SME path uses H2E automatically. `wpa_cli set sae_pwe` is runtime-only (lost when
+the supplicant interface is recreated); a persistent setup (boot service + NetworkManager dispatcher hook
++ a second SAE profile with the PSK profile as fallback) was built and tested on one Pi 4, on both
+bands, across reboot, radio toggle and NM restart; see `wifi-troubleshooting-rpi4-5.md`. Not tested: the
+Zero 2W and the Pi 5.
 
 **Implication for migrating to SAE-only.** The dongle Pis can do it once their password is stored as
 text. The brcmfmac Pis can too, but only with an explicit `key-mgmt=sae` profile plus `sae_pwe=1` in the
-supplicant, which is a client-side change per Pi and not yet made persistent; until then they belong on
+supplicant, a client-side change per Pi (the trial setup in the Pi 4/5 file); without it they belong on
 a WPA2-only SSID (or stay on `sae-mixed`, where they keep joining with WPA2-PSK). Do not change the AP's
 `sae_pwe` to suit them: `0` (H&P only) removes the downgrade check, `1` (H2E only) would reject
 H&P-only clients.
