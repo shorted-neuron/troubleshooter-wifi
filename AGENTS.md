@@ -48,6 +48,8 @@ action is taken.
   docs — append new findings under relevant sections rather than rewriting
   history.
 - Update `README.md` only for user-facing usage changes.
+- Write docs as bulleted or numbered outlines with indented sub-points, not long
+  paragraphs.
 
 
 ## Writing style
@@ -68,6 +70,9 @@ Moderate terse. Fluff dies. Keep technical exactness; sarcasm optional.
   with ..." footers, no session URLs/IDs in commits, PR bodies, comments or
   committed files. Messages describe the change, nothing else.
 - Use `--no-pager` (or pipe to `cat`) on git commands; never invoke `less`.
+- PR descriptions: short outline. What the PR is, files, where to start reading,
+  review notes, what is not included. Never restate the PR's own contents;
+  findings live in the docs.
 
 ## File modification tracking
 
