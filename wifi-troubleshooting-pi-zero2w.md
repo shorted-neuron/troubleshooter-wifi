@@ -25,7 +25,7 @@ red herring, see below. Real bug is a driver-level self-disconnect loop.
   on every `netplan generate`/`apply`. Hand-authoring a clean yaml file only survives
   until the next apply; it always converges to the ugly uuid filename once NM owns it.
   Not preventable without switching that interface's renderer away from NetworkManager.
-- Use `nmcli connection show` for the **readable name** (e.g. `netplan-wlan0-black`),
+- Use `nmcli connection show` for the **readable name** (e.g. `netplan-wlan0-wifi-B`),
   not the backing yaml filename, when identifying connections.
 - To change SSID/AP on this box: edit/add netplan yaml (`wifis: wlan0: access-points:`)
   or `nmcli connection modify <uuid> wifi.ssid ... wifi-sec.psk ...`, then
@@ -60,8 +60,8 @@ Recurring loop, every ~3–11 min:
   `nmcli`: `802-11-wireless.powersave: 0 (default)`.
 - Weak signal: `-58 dBm` via `iw dev wlan0 link` — strong, not marginal.
 - Stale firmware: `firmware-brcm80211` already at latest available version.
-- FT-PSK: `blue` (a different AP, since replaced) threw a hard
-  `FT: Invalid key management type (2)` error early on; `black` doesn't show that
+- FT-PSK: `wifi-A` (a different AP, since replaced) threw a hard
+  `FT: Invalid key management type (2)` error early on; `wifi-B` doesn't show that
   exact error, but shares the same disconnect signature. NM always offers FT-PSK
   opportunistically for any `wpa-psk` connection when the AP advertises 802.11r,
   regardless of nmcli config — not something easily disabled client-side. If the fix
@@ -193,3 +193,21 @@ the PR 3 branch:
   Useful as a manual recovery hammer if the box gets stuck again before `roamoff`
   fully proves out. Module-name bug fixed (see above).
 
+
+## 2026-10 fleet investigation — pointer
+
+Cross-model findings from the October 2026 investigation (scan-aware retries, the
+band-pin/5 GHz experiment, measurement method) live in `wifi-troubleshooting-general.md`.
+Nothing there changes the Zero 2W root cause above. Zero 2W specifics from that work:
+
+- The Zero 2W (`BCM43430/2`, firmware 9.88.4.77 on Bookworm, NetworkManager 1.42) runs the
+  PR 3/PR 4 monitor (`HTTP_CHECK_URL` defaulted, recheck and multi-probe on) with `*/10` cron
+  and was healthy at the end of the day: no fix actions logged.
+- NM sets `bgscan` per activation as described in the general file; only the BSS count seen at
+  activation matters. No Zero 2W lossy-link or scan-outage data has been collected (the
+  lossy-dongle study was on a different model; see `wifi-troubleshooting-pi-zero-usb.md`).
+- SAE/WPA3: the Zero 2W's supplicant does not list `sae` in its KeyMgmt capabilities, so NM does not offer it
+  and the unit joins with WPA2-PSK and a text password. Forcing SAE (temporary profile with `key-mgmt=sae`,
+  supplicant `sae_pwe=1`) does not work on this chip: firmware 7.45.96 never starts an SAE exchange and the
+  authentication times out after 10 s, unlike the Pi 4. Plan for it to stay WPA2-only (own SSID if the
+  main one goes SAE-only). Details: `wifi-troubleshooting-general.md`.

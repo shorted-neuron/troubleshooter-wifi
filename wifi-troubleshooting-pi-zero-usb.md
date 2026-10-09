@@ -55,7 +55,7 @@ nmcli device wifi connect "<SSID>" password "<PSK>" ifname wlan0
 ```
 
 Associated cleanly (WPA-PSK, no FT/802.11r involved — this AP doesn't advertise it,
-unlike the `blue` AP noted in the Zero 2W doc), got a DHCP lease, and stayed connected
+unlike the `wifi-A` AP noted in the Zero 2W doc), got a DHCP lease, and stayed connected
 through a short monitoring window. Credentials were applied directly via `nmcli` on
 the device only — never written to any file in this repo.
 
@@ -124,10 +124,55 @@ A bounce does not cure baseline loss and costs minutes of outage, so false trigg
 worth avoiding. Options not taken: locking to one BSSID (stops failover to another AP),
 changing bands (the 5 GHz BSS is weaker at the install location), cabling.
 
+## Offline after an AP security change — cause confirmed (2026-10-07/08)
+
+Resolved. The `rt2800usb` Pi above (`pi-model-b-1`), a Pi 2 Model B with the same dongle
+(`pi-2-1`) and a Pi Model B+ with an `rtl8192cu` dongle (`pi-b-plus-1`) all dropped off wifi when the
+AP's `wifi-A` SSID went `sae-mixed`, and stayed off (one of them was rebooted four times by the monitor,
+then hit its daily cap). Cause: the NM profile held the wifi password as a 64-hex key (Imager boot seed),
+which cannot be used for SAE, while NM offered SAE and wpa_supplicant preferred it. Fix: store the
+password as text. Full chain, checks and the hardware table: `wifi-troubleshooting-general.md`
+(section "WPA3 / SAE").
+
+Dongle-specific notes from the incident:
+- Both `rt2800usb` and `rtl8192cu` complete SAE once the text password is stored.
+- `rtl8192cu` scan wedge recurred on `pi-b-plus-1` after its profile was fixed (`iw dev wlan0 scan`
+  hung, then 0 BSSes). The module reload above cured it (26 networks right after). The monitor's
+  own driver reload would also have done it.
+- `pi-b-plus-1` and `pi-2-1` had no `auto-fix-wifi.sh` before; installed with `install.sh` once they
+  were back (driver autodiscovered as `rtl8192cu` / `rt2800usb`).
+
+## Failed dongle, and removing an unused one (2026-10)
+
+- **A defective `rtl8192cu` dongle** (`pi-b-plus-2`, wired Pi that was to gain wifi): after plugging it in
+  the Pi got very slow, the kernel logged `usbctrl_vendorreq TimeOut` / `Urb has error status` and then
+  `USB disconnect`; `lsusb` no longer listed it and no `wlan0` existed. The dongle was very hot to touch.
+  Treated as a hardware fault (not a driver or power-budget issue on a B+ with one other device) and not
+  reused; the Pi stays on ethernet. A monitor that was run by hand against the missing interface restarted
+  NetworkManager twice and left a stale failure counter; remove the monitor files from such a Pi.
+- **Removing wifi from a wired DNS/NTP server** that also had a dongle (`pi-2-3`, Bullseye, dhcpcd +
+  wpa_supplicant, keepalived on `eth0` only): first checked that VRRP, the DNS listener interface and every
+  address in use were on `eth0`; took `wlan0` down at runtime and held it 10 minutes (DNS on the virtual and
+  real addresses, NTP stratum, keepalived transitions, default route count all checked once a minute); then
+  removed the `interface wlan0` stanza from `/etc/dhcpcd.conf` and added `denyinterfaces wlan0`, moved the
+  hashed-key `wpa_supplicant.conf` out of `/etc` into a root-only backup, and unplugged the dongle. The
+  driver was deliberately not blacklisted. Do all of it over the wired interface, with a rollback path
+  (restore the two files, `modprobe`/`dhcpcd -n wlan0`, or replug).
+
+## HTTP-only failures on a lossy dongle (`pi-2-1`, `rt2800usb`, 2026-10)
+
+On a Pi 2 with an `rt2800usb` dongle at about -62 dBm (AP-side) the monitor's HTTP check failed on 7 of 35
+passes within about 2.5 hours (all `curl_rc=28`, a timeout; four of them within the last hour), while ping and DNS passed in the same pass every time and no real outage was ever seen. Under the
+rule that an HTTP-only failure is only a warning, none of them triggered a fix; if each had counted as a
+link failure, that Pi would have bounced its wifi seven times for nothing. A small ping and a DNS query
+get through a lossy link where a longer HTTPS transfer (handshake plus response) can still time out, which
+fits the loss figures in the lossy-link section above. Keep HTTP as a warning-only check on dongle Pis.
+
 ## Related scripts (this dir)
 
 - `wifi-usb-diag.sh` — driver-agnostic diagnostic dump for USB wifi/ethernet dongle
   setups (lsusb, interface→driver mapping, USB/net dmesg, NM state, ethtool). Use this
   instead of `wifi-brcm-diag.sh` (which assumes the built-in `brcmfmac` chip) on any
   Pi with no onboard wifi.
+
 
