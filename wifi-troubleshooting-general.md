@@ -150,10 +150,19 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
 - A fix (bounce, module reload, reboot) does not cure a bad radio link; it costs minutes of
   outage. Compare `actions.log` counts per day before and after a change to judge it.
 - Module reload must unload dependent modules first (`brcmfmac_cyw`, `brcmfmac_wcc`).
-- Do not install the monitor on a Pi that has no wifi interface (wired-only, or a failed dongle).
-  It tests `wlan0`, finds it missing, and runs the fix path (NM restarts, module reloads) against
-  hardware that is not there, which on a wired server only causes harm. A small follow-up could make
-  the script stay quiet when the configured interface does not exist.
+- A Pi with no wifi interface (wired-only, or a failed or unplugged dongle)
+  - An older script version assumed `wlan0`, found it missing, and ran the fix path
+    (NM restarts, module reloads) against hardware that was not there
+  - The current script stays idle: every mode says so and exits 0, with no fix or reboot, and
+    picks the interface up by itself when one appears
+  - An interface that was configured and then went missing is still a failure on purpose,
+    because the fix path can bring a dropped dongle back; to retire wifi on a host, remove the
+    cron entry
+- Run times
+  - `install.sh` gives each host its own minute offset in the 10-minute schedule (derived from
+    the machine-id, or `--cron-offset N`), so a fleet does not retry and bounce wifi in lockstep
+    after an AP or router blip
+  - When correlating logs across hosts, allow a window of about 10 minutes instead of one minute
 
 ## WPA3 / SAE: why some clients vanished after the AP went `sae-mixed` (2026-10)
 

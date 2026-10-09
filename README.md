@@ -78,6 +78,7 @@ trailing characters in `HTTP_CHECK_URL` (`cat -A /etc/auto-fix-wifi.conf` shows 
 ./install.sh --reconfigure            # same, plus re-discover iface/gateway/DNS/driver
 ./install.sh --http-url https://example.invalid/   # implies --reconfigure, no prompt
 ./install.sh --http-url none          # ...and skip the HTTP check
+./install.sh --cron-offset 3          # run at minutes 3, 13, 23, ... (0-9, or auto)
 ```
 
 `install.sh` only installs files; all configuration lives in `auto-fix-wifi.sh`, and
@@ -93,6 +94,20 @@ the installer delegates to it, so running these by hand does the same thing:
 The installer exits with the delegated script's status (0 ok, 2 bad arguments such as
 an invalid `--http-url`, 1 a ping/DNS check failed, 3 another instance was running);
 the files are installed in every case.
+
+The cron schedule is every 10 minutes at a per-host minute offset, so a fleet does not
+run (and bounce wifi after an AP or router blip) all in the same minute.
+- Fresh install: the offset is derived from the host (`/etc/machine-id`), so it is
+  stable across reinstalls
+- Upgrade: the schedule already in `/etc/cron.d/auto-fix-wifi` is kept
+- `--cron-offset N` (0-9) sets it explicitly; `--cron-offset auto` applies the derived one
+  to an existing install
+
+On a host with no wifi interface at all (wired-only, or a dongle that is not plugged in)
+every mode says so and exits 0: no checks, no fix, no reboot. It looks again on every run
+and starts monitoring by itself once an interface appears. An interface that was
+configured and has since gone missing is still treated as a failure, since the fix path
+can bring a dropped dongle back; to retire wifi on a host, remove its cron entry.
 
 On a fresh install (no conf yet) the installer runs `--reconfigure`; a plain
 `./install.sh` over an existing conf is an upgrade: it keeps your conf, fills in any
