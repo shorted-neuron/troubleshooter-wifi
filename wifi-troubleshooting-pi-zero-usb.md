@@ -159,6 +159,15 @@ Dongle-specific notes from the incident:
   driver was deliberately not blacklisted. Do all of it over the wired interface, with a rollback path
   (restore the two files, `modprobe`/`dhcpcd -n wlan0`, or replug).
 
+## HTTP-only failures on a lossy dongle (`pi-2-1`, `rt2800usb`, 2026-10)
+
+On a Pi 2 with an `rt2800usb` dongle at about -62 dBm (AP-side) the monitor's HTTP check failed on 7 of 35
+passes within about 2.5 hours (all `curl_rc=28`, a timeout; four of them within the last hour), while ping and DNS passed in the same pass every time and no real outage was ever seen. Under the
+rule that an HTTP-only failure is only a warning, none of them triggered a fix; if each had counted as a
+link failure, that Pi would have bounced its wifi seven times for nothing. A small ping and a DNS query
+get through a lossy link where a longer HTTPS transfer (handshake plus response) can still time out, which
+fits the loss figures in the lossy-link section above. Keep HTTP as a warning-only check on dongle Pis.
+
 ## Related scripts (this dir)
 
 - `wifi-usb-diag.sh` — driver-agnostic diagnostic dump for USB wifi/ethernet dongle

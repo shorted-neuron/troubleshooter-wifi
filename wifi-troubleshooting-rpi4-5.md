@@ -213,11 +213,12 @@ set at runtime, self-reverting; the Pi is wifi-only):
 | Run | Band | Result |
 |---|---|---|
 | 1 | 2.4 GHz BSS | external auth started, H2E commit sent (status 126) and answered by the AP, then `Frame command failed: ret=-110` (the next management frame was not sent), `Authentication ... timed out`; activation failed |
-| 2 | 2.4 GHz BSS | external auth started, then a connect event with `status=16` and no SAE commit/confirm logged; activation failed |
+| 2 | 2.4 GHz BSS | external auth started, then a connect event with `status=16` and no SAE commit/confirm logged; the AP and a monitor on the channel saw no frame at all from this Pi, so nothing was transmitted; activation failed |
 | 3 | 5 GHz BSS | full SAE exchange (commit 126 / confirm 0), `SAE completed`, `key_mgmt=SAE`, connected in about 6 s, 5 of 5 pings |
 
-So SAE works on this Pi on the band it normally uses and failed both times on 2.4 GHz; the AP saw the
-first commit but no confirm or association on 2.4 GHz. Cause not determined (a frame-transmit timeout on
+So SAE works on this Pi on the band it normally uses and failed both times on 2.4 GHz. In run 1 the AP
+saw the first commit but no confirm or association; in run 2 nothing reached the air, so that failure is
+inside the Pi before transmission. Cause not determined (a frame-transmit timeout on
 2.4 GHz after coming from a 5 GHz association; n=2 on 2.4 GHz, n=1 on 5 GHz). The persistent setup above
 was not installed here.
 
