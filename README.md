@@ -31,6 +31,11 @@ dongle like `rtl8192cu`) always-on wifi health check, meant to run from root's
 cron periodically. It supersedes manually running the diag/retry scripts for
 *ongoing* monitoring; those scripts remain useful for one-shot manual digging.
 
+**Goal:** keep a wifi interface operational over time, not instantly.
+- A host that is offline for a few minutes is fine (the Pis here run without the network)
+- The point is that it comes back on its own when its driver, dongle or NetworkManager do not
+- So the monitor is patient: retries, a recheck, and a settle wait after each fix step before it calls a fix failed
+
 Each run: pings the gateway, does a DNS lookup, and does an HTTP(S) check — all
 bound to the wifi interface where possible so a working `eth0` on dual-NIC
 boxes can't mask a dead wifi link. Ping and DNS are the link-level checks; if
@@ -45,6 +50,19 @@ driver module + reconnect) before escalating to a full fix (stop
 NetworkManager, reload the module, start NetworkManager). If the fix doesn't
 recover connectivity for 5 consecutive cron cycles (configurable), it reboots
 as a last resort, at most 4 times per 24h (`MAX_REBOOTS_PER_DAY`) and never sooner than `MIN_REBOOT_INTERVAL` (default `60m`; accepts e.g. `90s`, `60m`, `1h`, `1d`, any case; a bare number is minutes) after the previous one. Both defaults apply even if absent from the conf. Otherwise it only logs, and re-checks each run.
+
+After each fix step it does not check once and give up: it polls the whole battery for up to
+`FIX_SETTLE_WAIT` seconds (default 90, `0` = one immediate check), because a reconnect after a driver
+reload can take a minute or two (a failed WPA3 attempt first, then the fallback profile). A link that
+returns fast adds no delay. With the defaults a run that goes through every stage takes about 7
+minutes at worst (attempts ~1 min, recheck ~1 min, wifi-only fix up to ~2.5 min, full fix up to
+~2.5 min), under the 10-minute cron interval; if you raise `RETRY_COUNT`, `RECHECK_WAIT` or
+`FIX_SETTLE_WAIT`, keep the total below the interval (a slow run never overlaps the next one, it
+just delays it).
+
+The DNS query is pinned to the wifi interface for the duration of the lookup (a temporary source rule
+and routing table 4711, removed right after), because `dig -b` alone only sets the source address and a
+second NIC on the same subnet would answer the query. If wifi cannot carry it, the check fails.
 
 An HTTP-only failure (ping + DNS fine) is just a warning in syslog — no driver
 reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to

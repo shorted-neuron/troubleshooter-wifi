@@ -171,9 +171,15 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
   - After the AP released them, recovery took minutes, not seconds
     - wpa_supplicant backs off after repeated failures (the SSID is disabled for 10 to 20 s per failure, growing), so reconnecting took about 4 to 5 minutes
     - NetworkManager had also given up autoconnect on one Pi and tried nothing for 7 minutes; the monitor's fix cycle revived it
-  - A fix cycle can start just as an outage ends. Its post-fix re-check ran before the reconnect finished, so it counted a failed cycle (3/2) although the link was back about a minute later; the counter resets on the next passing run
-  - On a Pi with the SAE trial profile the reconnect after a driver reload takes about 75 to 100 s (the SAE attempt fails first, then the PSK fallback, then the hook returns to SAE), so the post-fix re-check is likely to fail there
-  - On a dual-NIC host the DNS check passed over ethernet while wifi was dead (dig binds the source address, not the interface); the ping and HTTP checks are interface-bound and failed correctly, so the cycle still failed. Do not rely on the DNS check alone on such hosts
+    - This is acceptable by design: the goal is a wifi interface that comes back eventually, not instantly
+  - A fix cycle can start just as an outage ends, and a reconnect after a driver reload is slow
+    - On a Pi with the SAE trial profile it takes about 75 to 100 s (the SAE attempt fails first, then the PSK fallback, then the hook returns to SAE)
+    - Seen: the post-fix check ran before the reconnect finished and counted a failed cycle (3/2) although the link was back about a minute later
+    - Fix: `FIX_SETTLE_WAIT` (default 90 s) polls the checks after each fix step instead of checking once
+  - On a dual-NIC host the DNS check passed over ethernet while wifi was dead
+    - `dig -b` binds the source address, not the interface; the answer came back over eth0
+    - Reproduced on a Pi with a dead link that kept its address, after a source-bound ping had taught the DNS server the wifi address lives at eth0's MAC
+    - Fix: the query is pinned to the wifi interface with a temporary source rule and routing table; the same test now fails the DNS check, as it should
 - Interface cases tested on real hardware (a Pi with a USB dongle)
   - No interface configured, driver unloaded: idle message, exit 0, no actions
   - Driver loaded again: picked up on the next run (`bootstrap: WIFI_IFACE=wlan0`), checks pass
