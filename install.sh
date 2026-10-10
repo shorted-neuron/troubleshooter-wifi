@@ -20,8 +20,8 @@
 #                               check). Works without a terminal.
 #
 #   ./install.sh --cron-offset N|auto
-#                               minute offset (0-9) of the 10-minute cron schedule:
-#                               N-59/10. "auto" derives it from this host (so the
+#                               minute offset (0-19) of the 20-minute cron schedule:
+#                               N-59/20. "auto" derives it from this host (so the
 #                               fleet does not all run at :00, :10, ...). Default:
 #                               a fresh install uses "auto"; an upgrade keeps the
 #                               schedule already in /etc/cron.d/auto-fix-wifi.
@@ -45,7 +45,7 @@ usage() {
 RECONFIGURE=0
 HTTP_URL_ARG=""
 HTTP_URL_ARG_SET=0
-CRON_OFFSET=""      # auto or 0-9 (empty = not given)
+CRON_OFFSET=""      # auto or 0-19 (empty = not given)
 CRON_OFFSET_SET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -66,8 +66,8 @@ done
 
 if [ "$CRON_OFFSET_SET" = "1" ]; then
   case "$CRON_OFFSET" in
-    auto|[0-9]) ;;
-    *) echo "--cron-offset must be a single digit 0-9 or auto" >&2; usage; exit 2 ;;
+    auto|[0-9]|1[0-9]) ;;
+    *) echo "--cron-offset must be a number 0-19 or auto" >&2; usage; exit 2 ;;
   esac
 fi
 
@@ -94,12 +94,12 @@ fi
 echo "Installing $BIN"
 $SUDO install -m 0755 "$SRC_DIR/auto-fix-wifi.sh" "$BIN"
 
-# Minute field of the 10-minute schedule. A per-host offset keeps the whole fleet
+# Minute field of the 20-minute schedule. A per-host offset keeps the whole fleet
 # from running (and bouncing wifi after an AP blip) in the same minute. The
 # derived offset is stable: it comes from the machine-id (hostname if missing).
 host_offset() {
   n=$(printf '%s' "$(cat /etc/machine-id 2>/dev/null || hostname)" | cksum | cut -d' ' -f1)
-  echo $((n % 10))
+  echo $((n % 20))
 }
 existing_sched=""
 if $SUDO test -f "$CRON"; then
@@ -108,16 +108,16 @@ fi
 if [ -n "$CRON_OFFSET" ]; then
   off=$CRON_OFFSET
   [ "$off" != "auto" ] || off=$(host_offset)
-  SCHED="$off-59/10"
+  SCHED="$off-59/20"
 elif printf '%s' "$existing_sched" | grep -Eq '^[0-9*/,-]+$'; then
   SCHED=$existing_sched          # upgrade: keep what is installed
 else
-  SCHED="$(host_offset)-59/10"
+  SCHED="$(host_offset)-59/20"
 fi
 cron_tmp=$(mktemp)
 trap 'rm -f "$cron_tmp"' EXIT
-sed "s|^\*/10 |$SCHED |" "$SRC_DIR/auto-fix-wifi.cron" >"$cron_tmp"
-echo "Installing $CRON (every 10 minutes, minute field: $SCHED)"
+sed "s|^\*/20 |$SCHED |" "$SRC_DIR/auto-fix-wifi.cron" >"$cron_tmp"
+echo "Installing $CRON (every 20 minutes, minute field: $SCHED)"
 $SUDO install -m 0644 "$cron_tmp" "$CRON"
 
 echo "Installing $LOGROTATE"

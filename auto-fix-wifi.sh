@@ -2,7 +2,7 @@
 # auto-fix-wifi.sh
 #
 # Consolidated always-on wifi health check + auto-recovery, meant to run from
-# root's cron every ~10 minutes (see auto-fix-wifi.cron for an example entry).
+# root's cron every ~20 minutes (see auto-fix-wifi.cron for an example entry).
 # Replaces manual use of wifi-brcm-diag.sh / wifi-usb-diag.sh / retry-wifi.sh
 # for ongoing monitoring; those scripts remain useful for one-shot manual
 # diagnosis. Works with either the built-in brcmfmac chip (Pi Zero 2W) or a
@@ -43,8 +43,6 @@
 #     seconds (default 90, 0 = one immediate check) instead of checked once: a
 #     reconnect after a driver reload can take a minute or two. The goal is a
 #     wifi interface that comes back, not one that comes back instantly.
-#   - The DNS query is pinned to the wifi interface (temporary source rule +
-#     routing table 4711) so a second NIC on the same subnet cannot answer it.
 #   - If the fix doesn't recover connectivity, increment a persistent
 #     consecutive-failure counter; after REBOOT_THRESHOLD consecutive failed
 #     fix cycles, reboot as a last resort -- at most MAX_REBOOTS_PER_DAY
@@ -476,37 +474,6 @@ check_ping() {
   return 1
 }
 
-# The DNS query must really leave through the wifi interface. "dig -b" only sets
-# the source address; on a host whose eth0 is on the same subnet the kernel still
-# routes the query out eth0 (lowest metric) and the answer comes back that way, so
-# the check passed with wifi dead. Pin packets sourced from the wifi address to
-# the wifi interface with a temporary source rule and routing table; if the
-# wifi interface cannot carry them the lookup fails ("unreachable") instead of
-# falling through to eth0. Removed again right after the query (and on exit).
-DNS_RT_TABLE=4711
-
-dns_pin_stop() {
-  ip rule del pref "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || true
-  ip route flush table "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || true
-}
-
-dns_pin_start() {
-  # $1 = wifi source address. Returns 1 if the rule could not be installed
-  # (kernel without policy routing); the caller then runs unpinned and says so.
-  dns_pin_stop
-  ip rule add from "$1/32" lookup "$DNS_RT_TABLE" pref "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || return 1
-  # fallback first: anything the specific routes below do not cover fails
-  ip route add unreachable default table "$DNS_RT_TABLE" metric 4000 >>"$DETAIL_LOG" 2>&1 || true
-  pin_subnet=$(ip -4 route show dev "$WIFI_IFACE" scope link 2>>"$DETAIL_LOG" | awk 'NR == 1 { print $1 }') || true
-  if [ -n "${pin_subnet:-}" ]; then
-    ip route add "$pin_subnet" dev "$WIFI_IFACE" src "$1" table "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || true
-  fi
-  if [ -n "$GATEWAY_IP" ]; then
-    ip route add default via "$GATEWAY_IP" dev "$WIFI_IFACE" table "$DNS_RT_TABLE" metric 100 >>"$DETAIL_LOG" 2>&1 || true
-  fi
-  return 0
-}
-
 check_dns() {
   if command -v dig >/dev/null 2>&1; then
     src_ip=$(ip -4 -o addr show "$WIFI_IFACE" 2>>"$DETAIL_LOG" | awk '{print $4}' | cut -d/ -f1 | head -1) || true
@@ -517,21 +484,11 @@ check_dns() {
       return 1
     fi
     if [ -n "$DNS_SERVER" ]; then
-      pinned=pinned
-      trap dns_pin_stop EXIT INT TERM
-      if ! dns_pin_start "$src_ip"; then
-        pinned=UNPINNED
-        log_detail "dns check: WARNING could not pin the query to $WIFI_IFACE (ip rule failed); it may leave through another interface"
-      fi
-      dns_rc=0
-      dig -b "$src_ip" "@$DNS_SERVER" +time=3 +tries="$DNS_TRIES" +short "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1 || dns_rc=$?
-      dns_pin_stop
-      trap - EXIT INT TERM
-      if [ "$dns_rc" = "0" ]; then
-        log_detail "dns check: OK (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES, $pinned)"
+      if dig -b "$src_ip" "@$DNS_SERVER" +time=3 +tries="$DNS_TRIES" +short "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1; then
+        log_detail "dns check: OK (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES)"
         return 0
       else
-        log_detail "dns check: FAILED (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES, $pinned)"
+        log_detail "dns check: FAILED (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES)"
         return 1
       fi
     fi
