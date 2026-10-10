@@ -114,11 +114,11 @@ the files are installed in every case.
 
 The cron schedule is every 20 minutes at a per-host minute offset, so a fleet does not
 run (and bounce wifi after an AP or router blip) all in the same minute.
-- Fresh install: the offset is derived from the host (`/etc/machine-id`), so it is
-  stable across reinstalls
-- Upgrade: the schedule already in `/etc/cron.d/auto-fix-wifi` is kept
-- `--cron-offset N` (0-19) sets it explicitly; `--cron-offset auto` applies the derived one
-  to an existing install
+- Default offset: the last byte of the wifi MAC (else eth0's) modulo 20, so it is stable
+  and can be worked out from an inventory
+- A fresh install, or an upgrade from the old 10-minute schedule, uses it; an upgrade keeps
+  a 20-minute schedule that is already installed
+- `--cron-offset N` (0-19) sets it explicitly; `--cron-offset auto` re-applies the default
 
 On a host with no wifi interface at all (wired-only, or a dongle that is not plugged in)
 every mode says so and exits 0: no checks, no fix, no reboot. It looks again on every run
