@@ -31,9 +31,13 @@ dongle like `rtl8192cu`) always-on wifi health check, meant to run from root's
 cron periodically. It supersedes manually running the diag/retry scripts for
 *ongoing* monitoring; those scripts remain useful for one-shot manual digging.
 
-Each run: pings the gateway, does a DNS lookup, and does an HTTP(S) check — all
-bound to the wifi interface where possible so a working `eth0` on dual-NIC
-boxes can't mask a dead wifi link. Ping and DNS are the link-level checks; if
+**Goal:** keep a wifi interface operational over time, not instantly.
+- A host that is offline for a few minutes is fine (the Pis here run without the network)
+- The point is that it comes back on its own when its driver, dongle or NetworkManager do not
+- So the monitor is patient: retries, a recheck, and a settle wait after each fix step before it calls a fix failed
+
+Each run: pings the gateway, does a DNS lookup, and does an HTTP(S) check. Ping and
+HTTP are bound to the wifi interface; the DNS lookup only uses its address. Ping and DNS are the link-level checks; if
 either fails, it waits 10s and retries the whole battery, up to 3 times. Each
 attempt is more than one packet: up to `PING_COUNT` pings (default 3, 1 s apart,
 stops at the first reply) and `dig` with `DNS_TRIES` (default 2), because a lossy
@@ -43,8 +47,21 @@ dongle's background wifi scan can swallow a whole round of retries. Only if that
 also fails does it try a scoped wifi-only fix (disconnect + reload the wifi
 driver module + reconnect) before escalating to a full fix (stop
 NetworkManager, reload the module, start NetworkManager). If the fix doesn't
-recover connectivity for 5 consecutive cron cycles (configurable), it reboots
+recover connectivity for 5 consecutive cron cycles (configurable; about 100 minutes at 20-minute pacing), it reboots
 as a last resort, at most 4 times per 24h (`MAX_REBOOTS_PER_DAY`) and never sooner than `MIN_REBOOT_INTERVAL` (default `60m`; accepts e.g. `90s`, `60m`, `1h`, `1d`, any case; a bare number is minutes) after the previous one. Both defaults apply even if absent from the conf. Otherwise it only logs, and re-checks each run.
+
+After each fix step it does not check once and give up: it polls the whole battery for up to
+`FIX_SETTLE_WAIT` seconds (default 90, `0` = one immediate check), because a reconnect after a driver
+reload can take a minute or two (a failed WPA3 attempt first, then the fallback profile). A link that
+returns fast adds no delay. With the defaults a run that goes through every stage takes about 7
+minutes at worst (attempts ~1 min, recheck ~1 min, wifi-only fix up to ~2.5 min, full fix up to
+~2.5 min), well under the 20-minute cron interval; if you raise `RETRY_COUNT`, `RECHECK_WAIT` or
+`FIX_SETTLE_WAIT`, keep the total below the interval (a slow run never overlaps the next one, it
+just delays it).
+
+On a host with a second NIC on the same subnet, the DNS lookup can be answered over that NIC even
+when wifi is down; ping and HTTP are interface-bound and still fail the check. Wifi-only hosts are
+unaffected.
 
 An HTTP-only failure (ping + DNS fine) is just a warning in syslog — no driver
 reload, no reboot. Set `HTTP_CHECK_URL` in `/etc/auto-fix-wifi.conf` to
@@ -78,7 +95,7 @@ trailing characters in `HTTP_CHECK_URL` (`cat -A /etc/auto-fix-wifi.conf` shows 
 ./install.sh --reconfigure            # same, plus re-discover iface/gateway/DNS/driver
 ./install.sh --http-url https://example.invalid/   # implies --reconfigure, no prompt
 ./install.sh --http-url none          # ...and skip the HTTP check
-./install.sh --cron-offset 3          # run at minutes 3, 13, 23, ... (0-9, or auto)
+./install.sh --cron-offset 3          # run at minutes 3, 23, 43 (0-19, or auto)
 ```
 
 `install.sh` only installs files; all configuration lives in `auto-fix-wifi.sh`, and
@@ -95,13 +112,13 @@ The installer exits with the delegated script's status (0 ok, 2 bad arguments su
 an invalid `--http-url`, 1 a ping/DNS check failed, 3 another instance was running);
 the files are installed in every case.
 
-The cron schedule is every 10 minutes at a per-host minute offset, so a fleet does not
+The cron schedule is every 20 minutes at a per-host minute offset, so a fleet does not
 run (and bounce wifi after an AP or router blip) all in the same minute.
-- Fresh install: the offset is derived from the host (`/etc/machine-id`), so it is
-  stable across reinstalls
-- Upgrade: the schedule already in `/etc/cron.d/auto-fix-wifi` is kept
-- `--cron-offset N` (0-9) sets it explicitly; `--cron-offset auto` applies the derived one
-  to an existing install
+- Default offset: the last byte of the wifi MAC (else eth0's) modulo 20, so it is stable
+  and can be worked out from an inventory
+- A fresh install, or an upgrade from the old 10-minute schedule, uses it; an upgrade keeps
+  a 20-minute schedule that is already installed
+- `--cron-offset N` (0-19) sets it explicitly; `--cron-offset auto` re-applies the default
 
 On a host with no wifi interface at all (wired-only, or a dongle that is not plugged in)
 every mode says so and exits 0: no checks, no fix, no reboot. It looks again on every run

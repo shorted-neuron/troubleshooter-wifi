@@ -2,7 +2,7 @@
 # auto-fix-wifi.sh
 #
 # Consolidated always-on wifi health check + auto-recovery, meant to run from
-# root's cron every ~10 minutes (see auto-fix-wifi.cron for an example entry).
+# root's cron every ~20 minutes (see auto-fix-wifi.cron for an example entry).
 # Replaces manual use of wifi-brcm-diag.sh / wifi-usb-diag.sh / retry-wifi.sh
 # for ongoing monitoring; those scripts remain useful for one-shot manual
 # diagnosis. Works with either the built-in brcmfmac chip (Pi Zero 2W) or a
@@ -39,6 +39,10 @@
 #   - If still failing: try a scoped wifi-only fix (disconnect + reload wifi
 #     driver module + reconnect). If that doesn't recover it, escalate to a
 #     full fix (stop NetworkManager, reload module, start NetworkManager).
+#     After each fix step the battery is polled for up to FIX_SETTLE_WAIT
+#     seconds (default 90, 0 = one immediate check) instead of checked once: a
+#     reconnect after a driver reload can take a minute or two. The goal is a
+#     wifi interface that comes back, not one that comes back instantly.
 #   - If the fix doesn't recover connectivity, increment a persistent
 #     consecutive-failure counter; after REBOOT_THRESHOLD consecutive failed
 #     fix cycles, reboot as a last resort -- at most MAX_REBOOTS_PER_DAY
@@ -351,6 +355,7 @@ EOF
   conf_default RETRY_COUNT "3"
   conf_default RETRY_WAIT "10"
   conf_default RECHECK_WAIT "45"
+  conf_default FIX_SETTLE_WAIT "90"
   conf_default PING_TIMEOUT "2"
   conf_default PING_COUNT "3"
   conf_default DNS_TRIES "2"
@@ -375,6 +380,11 @@ load_config() {
   RECHECK_WAIT=$(conf_get RECHECK_WAIT)
   case "$RECHECK_WAIT" in
     ''|*[!0-9]*) RECHECK_WAIT=45 ;;
+  esac
+  # Built-in default applies even if the key is missing/empty/non-numeric.
+  FIX_SETTLE_WAIT=$(conf_get FIX_SETTLE_WAIT)
+  case "$FIX_SETTLE_WAIT" in
+    ''|*[!0-9]*) FIX_SETTLE_WAIT=90 ;;
   esac
   PING_TIMEOUT=$(conf_get PING_TIMEOUT)
   # Built-in defaults apply even if the key is missing/empty/non-numeric/0.
@@ -563,6 +573,23 @@ wait_for_iface() {
     sleep 1
   done
   return 1
+}
+
+settle_cycle() {
+  # Post-fix check. A reconnect after a driver reload is not instant (a WPA3/SAE
+  # attempt that fails first can take 1-2 minutes before the fallback profile
+  # connects), so one immediate check right after the fix would call a recovering
+  # link failed. Poll until the battery passes or FIX_SETTLE_WAIT seconds have
+  # passed; a link that comes back fast adds no delay. 0 = one immediate check.
+  settle_deadline=$(( $(date +%s) + FIX_SETTLE_WAIT ))
+  while :; do
+    if run_cycle; then
+      return 0
+    fi
+    [ "$(date +%s)" -ge "$settle_deadline" ] && return 1
+    log_detail "post-fix check: not up yet, retrying (up to ${FIX_SETTLE_WAIT}s after the fix)"
+    sleep 5
+  done
 }
 
 reload_wifi_module() {
@@ -840,14 +867,14 @@ fi
 log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts${RECHECK_NOTE}; attempting fix"
 
 fix_wifi_only_bounce
-if run_cycle; then
+if settle_cycle; then
   log_action warning "recovered via scoped wifi-only bounce on $WIFI_IFACE ($(results))"
   write_fail_count 0
   exit 0
 fi
 
 fix_full_reload
-if run_cycle; then
+if settle_cycle; then
   log_action err "recovered via full NetworkManager + module reload on $WIFI_IFACE (wifi-only bounce was insufficient; $(results))"
   write_fail_count 0
   exit 0

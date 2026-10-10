@@ -20,7 +20,7 @@ from one unit only, the model file says which.
   interval, driver retry limit, band pin) is applied without touching the saved profile and
   restored on exit. ABA order (change, restore, change) because links drift over time.
 - **Keep a second path to the box.** A test that can drop `wlan0` needs ethernet (or another
-  reachable path), or the control session dies with the test. Pause the `*/10` monitor cron
+  reachable path), or the control session dies with the test. Pause the monitor cron
   entry for the test and restore it from a trap, otherwise the monitor may bounce wifi mid-run.
 - **Capture on the client** (`tcpdump -i wlan0 -n -e -s 0 -w file`, installed with apt) to
   see which frames reach the host. Compare DHCP replies against *broadcast* frames from other
@@ -159,10 +159,10 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
     because the fix path can bring a dropped dongle back; to retire wifi on a host, remove the
     cron entry
 - Run times
-  - `install.sh` gives each host its own minute offset in the 10-minute schedule (derived from
+  - `install.sh` gives each host its own minute offset in the 20-minute schedule (derived from
     the machine-id, or `--cron-offset N`), so a fleet does not retry and bounce wifi in lockstep
     after an AP or router blip
-  - When correlating logs across hosts, allow a window of about 10 minutes instead of one minute
+  - When correlating logs across hosts, allow a window of about 20 minutes instead of one minute
 - Block test of the monitor on real hosts (the AP denied three clients at once; each ran its own cron minute)
   - Every stage showed up in the logs: attempts, recheck, wifi-only bounce, full NM + driver reload, failed-cycle counter
   - End of the chain
@@ -171,9 +171,11 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
   - After the AP released them, recovery took minutes, not seconds
     - wpa_supplicant backs off after repeated failures (the SSID is disabled for 10 to 20 s per failure, growing), so reconnecting took about 4 to 5 minutes
     - NetworkManager had also given up autoconnect on one Pi and tried nothing for 7 minutes; the monitor's fix cycle revived it
-  - A fix cycle can start just as an outage ends. Its post-fix re-check ran before the reconnect finished, so it counted a failed cycle (3/2) although the link was back about a minute later; the counter resets on the next passing run
-  - On a Pi with the SAE trial profile the reconnect after a driver reload takes about 75 to 100 s (the SAE attempt fails first, then the PSK fallback, then the hook returns to SAE), so the post-fix re-check is likely to fail there
-  - On a dual-NIC host the DNS check passed over ethernet while wifi was dead (dig binds the source address, not the interface); the ping and HTTP checks are interface-bound and failed correctly, so the cycle still failed. Do not rely on the DNS check alone on such hosts
+    - This is acceptable by design: the goal is a wifi interface that comes back eventually, not instantly
+  - A fix cycle can start just as an outage ends, and a reconnect after a driver reload is slow
+    - On a Pi with the SAE trial profile it takes about 75 to 100 s (the SAE attempt fails first, then the PSK fallback, then the hook returns to SAE)
+    - Seen: the post-fix check ran before the reconnect finished and counted a failed cycle (3/2) although the link was back about a minute later
+    - Fix: `FIX_SETTLE_WAIT` (default 90 s) polls the checks after each fix step instead of checking once
 - Interface cases tested on real hardware (a Pi with a USB dongle)
   - No interface configured, driver unloaded: idle message, exit 0, no actions
   - Driver loaded again: picked up on the next run (`bootstrap: WIFI_IFACE=wlan0`), checks pass
