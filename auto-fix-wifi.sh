@@ -71,6 +71,12 @@
 #                      never fixes or reboots.
 #   -h, --help         usage.
 #
+# With no wifi interface configured and none present (a wired-only host, or a
+# dongle that is not plugged in) every mode just says so and exits 0: no checks,
+# no fix, no reboot. A configured interface that has gone missing is treated as
+# a failure like any other (the fix path can bring a dropped dongle back). To
+# retire wifi on a host that has the monitor, remove the monitor (cron entry).
+#
 # Must run as root (module unload/reload, nmcli, systemctl, reboot).
 
 set -eu
@@ -210,7 +216,8 @@ discover_wifi_iface() {
       break
     done
   fi
-  echo "${iface:-wlan0}"
+  # nothing found = empty (no wifi interface); callers must handle that
+  echo "${iface:-}"
 }
 
 discover_gateway() {
@@ -302,21 +309,30 @@ EOF
 
   cur_iface=$(conf_get WIFI_IFACE)
   if [ "$REDISCOVER" = "1" ] || [ -z "$cur_iface" ]; then
-    cur_iface=$(discover_wifi_iface)
-    conf_set WIFI_IFACE "$cur_iface"
-    log_detail "bootstrap: WIFI_IFACE=$cur_iface"
+    # never replaces a configured interface with "none found" (it may only be
+    # down); with no interface configured and none found, WIFI_IFACE stays
+    # empty and the monitor idles (see main), re-checking on every run
+    found_iface=$(discover_wifi_iface)
+    if [ -n "$found_iface" ]; then
+      cur_iface=$found_iface
+      conf_set WIFI_IFACE "$cur_iface"
+      log_detail "bootstrap: WIFI_IFACE=$cur_iface"
+    fi
   fi
 
-  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get GATEWAY_IP)" ]; then
-    conf_refresh GATEWAY_IP "$(discover_gateway "$cur_iface")"
-  fi
+  # interface-dependent values; skipped while there is no wifi interface
+  if [ -n "$cur_iface" ]; then
+    if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get GATEWAY_IP)" ]; then
+      conf_refresh GATEWAY_IP "$(discover_gateway "$cur_iface")"
+    fi
 
-  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get DNS_SERVER)" ]; then
-    conf_refresh DNS_SERVER "$(discover_dns_server "$cur_iface")"
-  fi
+    if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get DNS_SERVER)" ]; then
+      conf_refresh DNS_SERVER "$(discover_dns_server "$cur_iface")"
+    fi
 
-  if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get WIFI_DRIVER)" ]; then
-    conf_refresh WIFI_DRIVER "$(discover_wifi_driver "$cur_iface")"
+    if [ "$REDISCOVER" = "1" ] || [ -z "$(conf_get WIFI_DRIVER)" ]; then
+      conf_refresh WIFI_DRIVER "$(discover_wifi_driver "$cur_iface")"
+    fi
   fi
 
   # Fixed defaults, only set if absent/empty (never overwritten by
@@ -752,6 +768,19 @@ load_config
 if [ "$MODE" = "reconfigure" ]; then
   configure_http_url
   load_config          # pick up the new HTTP_CHECK_URL
+fi
+
+if [ -z "$WIFI_IFACE" ]; then
+  # no wifi interface configured and none found (wired-only host, or a dongle
+  # that is not plugged in): nothing to check, so no fix or reboot path either.
+  # Each run looks again, so it starts working once an interface appears.
+  idle_msg="no wifi interface found on this host; nothing to monitor (the monitor starts working by itself once one appears)"
+  if [ "$MODE" = "run" ]; then
+    log_detail "$idle_msg"
+  else
+    echo "$idle_msg"
+  fi
+  exit 0
 fi
 
 warn_if_gateway_stale
