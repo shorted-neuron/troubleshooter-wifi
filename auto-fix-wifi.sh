@@ -39,6 +39,12 @@
 #   - If still failing: try a scoped wifi-only fix (disconnect + reload wifi
 #     driver module + reconnect). If that doesn't recover it, escalate to a
 #     full fix (stop NetworkManager, reload module, start NetworkManager).
+#     After each fix step the battery is polled for up to FIX_SETTLE_WAIT
+#     seconds (default 90, 0 = one immediate check) instead of checked once: a
+#     reconnect after a driver reload can take a minute or two. The goal is a
+#     wifi interface that comes back, not one that comes back instantly.
+#   - The DNS query is pinned to the wifi interface (temporary source rule +
+#     routing table 4711) so a second NIC on the same subnet cannot answer it.
 #   - If the fix doesn't recover connectivity, increment a persistent
 #     consecutive-failure counter; after REBOOT_THRESHOLD consecutive failed
 #     fix cycles, reboot as a last resort -- at most MAX_REBOOTS_PER_DAY
@@ -351,6 +357,7 @@ EOF
   conf_default RETRY_COUNT "3"
   conf_default RETRY_WAIT "10"
   conf_default RECHECK_WAIT "45"
+  conf_default FIX_SETTLE_WAIT "90"
   conf_default PING_TIMEOUT "2"
   conf_default PING_COUNT "3"
   conf_default DNS_TRIES "2"
@@ -375,6 +382,11 @@ load_config() {
   RECHECK_WAIT=$(conf_get RECHECK_WAIT)
   case "$RECHECK_WAIT" in
     ''|*[!0-9]*) RECHECK_WAIT=45 ;;
+  esac
+  # Built-in default applies even if the key is missing/empty/non-numeric.
+  FIX_SETTLE_WAIT=$(conf_get FIX_SETTLE_WAIT)
+  case "$FIX_SETTLE_WAIT" in
+    ''|*[!0-9]*) FIX_SETTLE_WAIT=90 ;;
   esac
   PING_TIMEOUT=$(conf_get PING_TIMEOUT)
   # Built-in defaults apply even if the key is missing/empty/non-numeric/0.
@@ -464,6 +476,37 @@ check_ping() {
   return 1
 }
 
+# The DNS query must really leave through the wifi interface. "dig -b" only sets
+# the source address; on a host whose eth0 is on the same subnet the kernel still
+# routes the query out eth0 (lowest metric) and the answer comes back that way, so
+# the check passed with wifi dead. Pin packets sourced from the wifi address to
+# the wifi interface with a temporary source rule and routing table; if the
+# wifi interface cannot carry them the lookup fails ("unreachable") instead of
+# falling through to eth0. Removed again right after the query (and on exit).
+DNS_RT_TABLE=4711
+
+dns_pin_stop() {
+  ip rule del pref "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || true
+  ip route flush table "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || true
+}
+
+dns_pin_start() {
+  # $1 = wifi source address. Returns 1 if the rule could not be installed
+  # (kernel without policy routing); the caller then runs unpinned and says so.
+  dns_pin_stop
+  ip rule add from "$1/32" lookup "$DNS_RT_TABLE" pref "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || return 1
+  # fallback first: anything the specific routes below do not cover fails
+  ip route add unreachable default table "$DNS_RT_TABLE" metric 4000 >>"$DETAIL_LOG" 2>&1 || true
+  pin_subnet=$(ip -4 route show dev "$WIFI_IFACE" scope link 2>>"$DETAIL_LOG" | awk 'NR == 1 { print $1 }') || true
+  if [ -n "${pin_subnet:-}" ]; then
+    ip route add "$pin_subnet" dev "$WIFI_IFACE" src "$1" table "$DNS_RT_TABLE" >>"$DETAIL_LOG" 2>&1 || true
+  fi
+  if [ -n "$GATEWAY_IP" ]; then
+    ip route add default via "$GATEWAY_IP" dev "$WIFI_IFACE" table "$DNS_RT_TABLE" metric 100 >>"$DETAIL_LOG" 2>&1 || true
+  fi
+  return 0
+}
+
 check_dns() {
   if command -v dig >/dev/null 2>&1; then
     src_ip=$(ip -4 -o addr show "$WIFI_IFACE" 2>>"$DETAIL_LOG" | awk '{print $4}' | cut -d/ -f1 | head -1) || true
@@ -474,11 +517,21 @@ check_dns() {
       return 1
     fi
     if [ -n "$DNS_SERVER" ]; then
-      if dig -b "$src_ip" "@$DNS_SERVER" +time=3 +tries="$DNS_TRIES" +short "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1; then
-        log_detail "dns check: OK (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES)"
+      pinned=pinned
+      trap dns_pin_stop EXIT INT TERM
+      if ! dns_pin_start "$src_ip"; then
+        pinned=UNPINNED
+        log_detail "dns check: WARNING could not pin the query to $WIFI_IFACE (ip rule failed); it may leave through another interface"
+      fi
+      dns_rc=0
+      dig -b "$src_ip" "@$DNS_SERVER" +time=3 +tries="$DNS_TRIES" +short "$DNS_CHECK_NAME" >>"$DETAIL_LOG" 2>&1 || dns_rc=$?
+      dns_pin_stop
+      trap - EXIT INT TERM
+      if [ "$dns_rc" = "0" ]; then
+        log_detail "dns check: OK (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES, $pinned)"
         return 0
       else
-        log_detail "dns check: FAILED (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES)"
+        log_detail "dns check: FAILED (dig @$DNS_SERVER $DNS_CHECK_NAME via $WIFI_IFACE src $src_ip, tries=$DNS_TRIES, $pinned)"
         return 1
       fi
     fi
@@ -563,6 +616,23 @@ wait_for_iface() {
     sleep 1
   done
   return 1
+}
+
+settle_cycle() {
+  # Post-fix check. A reconnect after a driver reload is not instant (a WPA3/SAE
+  # attempt that fails first can take 1-2 minutes before the fallback profile
+  # connects), so one immediate check right after the fix would call a recovering
+  # link failed. Poll until the battery passes or FIX_SETTLE_WAIT seconds have
+  # passed; a link that comes back fast adds no delay. 0 = one immediate check.
+  settle_deadline=$(( $(date +%s) + FIX_SETTLE_WAIT ))
+  while :; do
+    if run_cycle; then
+      return 0
+    fi
+    [ "$(date +%s)" -ge "$settle_deadline" ] && return 1
+    log_detail "post-fix check: not up yet, retrying (up to ${FIX_SETTLE_WAIT}s after the fix)"
+    sleep 5
+  done
 }
 
 reload_wifi_module() {
@@ -840,14 +910,14 @@ fi
 log_syslog warning "check FAILED ($WIFI_IFACE): $(results) after $RETRY_COUNT attempts${RECHECK_NOTE}; attempting fix"
 
 fix_wifi_only_bounce
-if run_cycle; then
+if settle_cycle; then
   log_action warning "recovered via scoped wifi-only bounce on $WIFI_IFACE ($(results))"
   write_fail_count 0
   exit 0
 fi
 
 fix_full_reload
-if run_cycle; then
+if settle_cycle; then
   log_action err "recovered via full NetworkManager + module reload on $WIFI_IFACE (wifi-only bounce was insufficient; $(results))"
   write_fail_count 0
   exit 0
