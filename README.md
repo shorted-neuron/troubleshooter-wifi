@@ -53,11 +53,11 @@ as a last resort, at most 4 times per 24h (`MAX_REBOOTS_PER_DAY`) and never soon
 After each fix step it does not check once and give up: it polls the whole battery for up to
 `FIX_SETTLE_WAIT` seconds (default 90, `0` = one immediate check), because a reconnect after a driver
 reload can take a minute or two (a failed WPA3 attempt first, then the fallback profile). A link that
-returns fast adds no delay. With the defaults a run that goes through every stage takes about 7
-minutes at worst (attempts ~1 min, recheck ~1 min, wifi-only fix up to ~2.5 min, full fix up to
-~2.5 min), well under the 20-minute cron interval; if you raise `RETRY_COUNT`, `RECHECK_WAIT` or
-`FIX_SETTLE_WAIT`, keep the total below the interval (a slow run never overlaps the next one, it
-just delays it).
+returns fast adds no delay. With the defaults a run that goes through every stage takes 6 to 9
+minutes (measured; attempts ~1 min, recheck ~1 min, wifi-only fix ~2 min, full fix 2 to 5 min, the
+rest is NetworkManager restart time), well under the 20-minute cron interval; if you raise
+`RETRY_COUNT`, `RECHECK_WAIT` or `FIX_SETTLE_WAIT`, keep the total below the interval (a slow run
+never overlaps the next one, it just delays it).
 
 On a host with a second NIC on the same subnet, the DNS lookup can be answered over that NIC even
 when wifi is down; ping and HTTP are interface-bound and still fail the check. Wifi-only hosts are

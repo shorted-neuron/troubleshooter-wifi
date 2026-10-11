@@ -160,7 +160,7 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
     cron entry
 - Run times
   - `install.sh` gives each host its own minute offset in the 20-minute schedule (derived from
-    the machine-id, or `--cron-offset N`), so a fleet does not retry and bounce wifi in lockstep
+    the wifi MAC, or `--cron-offset N`), so a fleet does not retry and bounce wifi in lockstep
     after an AP or router blip
   - When correlating logs across hosts, allow a window of about 20 minutes instead of one minute
 - Block test of the monitor on real hosts (the AP denied three clients at once; each ran its own cron minute)
@@ -176,6 +176,12 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
     - On a Pi with the SAE trial profile it takes about 75 to 100 s (the SAE attempt fails first, then the PSK fallback, then the hook returns to SAE)
     - Seen: the post-fix check ran before the reconnect finished and counted a failed cycle (3/2) although the link was back about a minute later
     - Fix: `FIX_SETTLE_WAIT` (default 90 s) polls the checks after each fix step instead of checking once
+- Second block test with the settle wait and 20-minute pacing (three clients, each on its own cron minute)
+  - Each stage polled the checks every ~5 s for up to 90 s after the fix ("post-fix check: not up yet, retrying") before escalating
+  - A failed cycle took 6 to 8.5 minutes; the spread is NetworkManager restart time (a single-core Pi took ~2.5 minutes to come back)
+  - Second failed cycle: reboot on the Pi with the cap, "NOT rebooting" on the two with `MAX_REBOOTS_PER_DAY=0`
+  - After the AP released them, two Pis reconnected by themselves within a minute; the third stayed down until its next
+    scheduled run, where the wifi-only bounce recovered it in under 45 s (counter reset to 0)
 - Interface cases tested on real hardware (a Pi with a USB dongle)
   - No interface configured, driver unloaded: idle message, exit 0, no actions
   - Driver loaded again: picked up on the next run (`bootstrap: WIFI_IFACE=wlan0`), checks pass
