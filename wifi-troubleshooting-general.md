@@ -150,10 +150,34 @@ Recorded in detail in the Zero 2W file and the USB file; the short version:
 - A fix (bounce, module reload, reboot) does not cure a bad radio link; it costs minutes of
   outage. Compare `actions.log` counts per day before and after a change to judge it.
 - Module reload must unload dependent modules first (`brcmfmac_cyw`, `brcmfmac_wcc`).
-- Do not install the monitor on a Pi that has no wifi interface (wired-only, or a failed dongle).
-  It tests `wlan0`, finds it missing, and runs the fix path (NM restarts, module reloads) against
-  hardware that is not there, which on a wired server only causes harm. A small follow-up could make
-  the script stay quiet when the configured interface does not exist.
+- A Pi with no wifi interface (wired-only, or a failed or unplugged dongle)
+  - An older script version assumed `wlan0`, found it missing, and ran the fix path
+    (NM restarts, module reloads) against hardware that was not there
+  - The current script stays idle: every mode says so and exits 0, with no fix or reboot, and
+    picks the interface up by itself when one appears
+  - An interface that was configured and then went missing is still a failure on purpose,
+    because the fix path can bring a dropped dongle back; to retire wifi on a host, remove the
+    cron entry
+- Run times
+  - `install.sh` gives each host its own minute offset in the 10-minute schedule (derived from
+    the machine-id, or `--cron-offset N`), so a fleet does not retry and bounce wifi in lockstep
+    after an AP or router blip
+  - When correlating logs across hosts, allow a window of about 10 minutes instead of one minute
+- Block test of the monitor on real hosts (the AP denied three clients at once; each ran its own cron minute)
+  - Every stage showed up in the logs: attempts, recheck, wifi-only bounce, full NM + driver reload, failed-cycle counter
+  - End of the chain
+    - Reboot at the threshold on one Pi (reboot count recorded, counter reset)
+    - "NOT rebooting" at the cap on the others, with `MAX_REBOOTS_PER_DAY=0` (a safe way to test the last stage)
+  - After the AP released them, recovery took minutes, not seconds
+    - wpa_supplicant backs off after repeated failures (the SSID is disabled for 10 to 20 s per failure, growing), so reconnecting took about 4 to 5 minutes
+    - NetworkManager had also given up autoconnect on one Pi and tried nothing for 7 minutes; the monitor's fix cycle revived it
+  - A fix cycle can start just as an outage ends. Its post-fix re-check ran before the reconnect finished, so it counted a failed cycle (3/2) although the link was back about a minute later; the counter resets on the next passing run
+  - On a Pi with the SAE trial profile the reconnect after a driver reload takes about 75 to 100 s (the SAE attempt fails first, then the PSK fallback, then the hook returns to SAE), so the post-fix re-check is likely to fail there
+  - On a dual-NIC host the DNS check passed over ethernet while wifi was dead (dig binds the source address, not the interface); the ping and HTTP checks are interface-bound and failed correctly, so the cycle still failed. Do not rely on the DNS check alone on such hosts
+- Interface cases tested on real hardware (a Pi with a USB dongle)
+  - No interface configured, driver unloaded: idle message, exit 0, no actions
+  - Driver loaded again: picked up on the next run (`bootstrap: WIFI_IFACE=wlan0`), checks pass
+  - Interface configured but driver unloaded: failure path, the wifi-only fix reloads the driver and recovers
 
 ## WPA3 / SAE: why some clients vanished after the AP went `sae-mixed` (2026-10)
 
