@@ -20,11 +20,13 @@
 #                               check). Works without a terminal.
 #
 #   ./install.sh --cron-offset N|auto
-#                               minute offset (0-9) of the 10-minute cron schedule:
-#                               N-59/10. "auto" derives it from this host (so the
-#                               fleet does not all run at :00, :10, ...). Default:
-#                               a fresh install uses "auto"; an upgrade keeps the
-#                               schedule already in /etc/cron.d/auto-fix-wifi.
+#                               minute offset (0-19) of the 20-minute cron schedule:
+#                               N-59/20. "auto" derives it from this host: the last
+#                               byte of the wifi MAC (else eth0's) modulo 20, so
+#                               the fleet does not all run in the same minute.
+#                               Default: "auto", except that an upgrade keeps a
+#                               20-minute schedule already installed (an old
+#                               10-minute one is moved to 20 with "auto").
 #
 # All configuration logic lives in auto-fix-wifi.sh (--reconfigure, --check,
 # --http-url); this script only installs files and delegates, so running
@@ -45,7 +47,7 @@ usage() {
 RECONFIGURE=0
 HTTP_URL_ARG=""
 HTTP_URL_ARG_SET=0
-CRON_OFFSET=""      # auto or 0-9 (empty = not given)
+CRON_OFFSET=""      # auto or 0-19 (empty = not given)
 CRON_OFFSET_SET=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -66,8 +68,8 @@ done
 
 if [ "$CRON_OFFSET_SET" = "1" ]; then
   case "$CRON_OFFSET" in
-    auto|[0-9]) ;;
-    *) echo "--cron-offset must be a single digit 0-9 or auto" >&2; usage; exit 2 ;;
+    auto|[0-9]|1[0-9]) ;;
+    *) echo "--cron-offset must be a number 0-19 or auto" >&2; usage; exit 2 ;;
   esac
 fi
 
@@ -94,12 +96,24 @@ fi
 echo "Installing $BIN"
 $SUDO install -m 0755 "$SRC_DIR/auto-fix-wifi.sh" "$BIN"
 
-# Minute field of the 10-minute schedule. A per-host offset keeps the whole fleet
-# from running (and bouncing wifi after an AP blip) in the same minute. The
-# derived offset is stable: it comes from the machine-id (hostname if missing).
+# Minute field of the 20-minute schedule. A per-host offset keeps the whole fleet
+# from running (and bouncing wifi after an AP blip) in the same minute. "auto" is
+# the last byte of the wifi MAC (else eth0's) modulo 20: stable per hardware and
+# easy to predict from an inventory. Without a usable MAC it falls back to a
+# checksum of the machine-id (hostname if missing).
 host_offset() {
+  mac=""
+  for d in /sys/class/net/wlan* /sys/class/net/eth0; do
+    [ -r "$d/address" ] || continue
+    mac=$(cat "$d/address" 2>/dev/null) || continue
+    break
+  done
+  last=${mac##*:}
+  case "$last" in
+    [0-9a-fA-F][0-9a-fA-F]) echo $(( 0x$last % 20 )); return 0 ;;
+  esac
   n=$(printf '%s' "$(cat /etc/machine-id 2>/dev/null || hostname)" | cksum | cut -d' ' -f1)
-  echo $((n % 10))
+  echo $((n % 20))
 }
 existing_sched=""
 if $SUDO test -f "$CRON"; then
@@ -108,16 +122,16 @@ fi
 if [ -n "$CRON_OFFSET" ]; then
   off=$CRON_OFFSET
   [ "$off" != "auto" ] || off=$(host_offset)
-  SCHED="$off-59/10"
-elif printf '%s' "$existing_sched" | grep -Eq '^[0-9*/,-]+$'; then
-  SCHED=$existing_sched          # upgrade: keep what is installed
+  SCHED="$off-59/20"
+elif printf '%s' "$existing_sched" | grep -Eq '^(\*|([0-9]|1[0-9])-59)/20$'; then
+  SCHED=$existing_sched          # upgrade: a 20-minute schedule stays as it is
 else
-  SCHED="$(host_offset)-59/10"
+  SCHED="$(host_offset)-59/20"   # fresh install, or an old 10-minute schedule
 fi
 cron_tmp=$(mktemp)
 trap 'rm -f "$cron_tmp"' EXIT
-sed "s|^\*/10 |$SCHED |" "$SRC_DIR/auto-fix-wifi.cron" >"$cron_tmp"
-echo "Installing $CRON (every 10 minutes, minute field: $SCHED)"
+sed "s|^\*/20 |$SCHED |" "$SRC_DIR/auto-fix-wifi.cron" >"$cron_tmp"
+echo "Installing $CRON (every 20 minutes, minute field: $SCHED)"
 $SUDO install -m 0644 "$cron_tmp" "$CRON"
 
 echo "Installing $LOGROTATE"
