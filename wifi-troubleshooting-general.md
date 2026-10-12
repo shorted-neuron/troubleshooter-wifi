@@ -309,3 +309,34 @@ H&P-only clients.
   Fix actions cannot repair a profile problem, so it keeps logging until the profile is fixed.
 - `pkill -f <pattern>` inside `sudo sh -c '...'` matches its own shell (the pattern is on its own
   command line); use `pgrep -x`/a script file or a PID.
+
+## A USB dongle that goes deaf: dongle swap test (2026-10)
+
+One Pi with an `mt7601u` dongle had a fix cycle about every 80 minutes. To tell whether the dongle
+or the Pi/OS was at fault, two older Pis (each with a second, wired NIC)
+swapped dongles with an `rtl8192cu` dongle (RTL8188CUS) and were watched for about 16 hours.
+
+- Result
+  - The problem moved with the `mt7601u` dongle: 12 fix cycles on its new Pi in 16 hours, again about 80 minutes apart
+  - The `rtl8192cu` dongle had one short event (the driver logged `AP off, try to reconnect`) in the same time
+  - A different USB port, and wifi power save plus USB autosuspend already off, made no difference
+  - No under-voltage and no USB errors; the only kernel USB lines were the monitor's own driver reloads
+- What "deaf" looks like
+  - Client side: `wpa_supplicant` logs `CTRL-EVENT-BEACON-LOSS`, then checks fail; the wifi-only bounce does not help, a full NetworkManager + driver reload does
+  - AP side: the station stays associated (no deauth, no inactivity timeout), its uplink frame counter goes flat, inactive time climbs past ~45 s, the AP retries frames to it in bursts, signal stays normal
+  - Signal alone does not show it; per-station counters sampled every ~6 s around the suspect time do
+- Dual-NIC side effect (known, left as is)
+  - With both NICs on one subnet the kernel answers ARP for either address on either NIC; NetworkManager logs `conflict detected for IP ... with host <own other MAC>`
+  - While the wifi radio is deaf, the monitor's wifi probe can make other hosts learn the wired address as the wifi MAC, so the wired address goes dark for ~6 minutes starting seconds after a cron run, and only that host is affected
+  - `arp_ignore=1` and `arp_announce=2` on such hosts would stop it; not installed, because most clients are wifi-only
+- A separate wired outage (all hosts behind one powerline pair and dumb switch, ~10 minutes) happened once, not caused by the swap
+  - Pulling and re-inserting a dongle on the oldest Pi, with a 1 Hz ping on every wired host, did not reproduce it
+  - Such outages are invisible from the AP and the router (no link events, ARP just fails); only a continuous ping from several vantage points timestamps them
+  - Pulling each Pi's ethernet cable for 60 s (three Pis behind the same powerline pair, one at a time) did not either: the pulled Pi answered within about a second of the link returning, and no other host or control lost a ping beyond a 3 s blip on one host
+  - On the dual-NIC Pi, the wifi address also went unreachable for the same 60 s although the radio stayed associated (the Pi's own routing/ARP handling of the second address while eth0 was down; cause not chased)
+- The monitor's behavior was correct throughout
+  - Every cycle recovered without a reboot, the failed-cycle counter went back to 0, and the settle wait polled after each fix as designed
+  - A dongle that cycles this often is a hardware problem: replace it where wifi matters
+- Plan after the test: both Pis go wifi-only (ethernet cables removed)
+  - The dual-NIC effects above then no longer apply to them
+  - Without a cable there is no way in when wifi stays down: the monitor's own fix chain, then its bounded reboot, are the only recovery; a Pi that still does not recover needs a power cycle and a look at the logs (keep a cable at hand for that)
