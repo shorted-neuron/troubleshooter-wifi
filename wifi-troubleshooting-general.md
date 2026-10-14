@@ -340,3 +340,38 @@ swapped dongles with an `rtl8192cu` dongle (RTL8188CUS) and were watched for abo
 - Plan after the test: both Pis go wifi-only (ethernet cables removed)
   - The dual-NIC effects above then no longer apply to them
   - Without a cable there is no way in when wifi stays down: the monitor's own fix chain, then its bounded reboot, are the only recovery; a Pi that still does not recover needs a power cycle and a look at the logs (keep a cable at hand for that)
+
+## Fleet checkup, 2026-10-13 (day after the dongle swap work)
+
+- Scope and method
+  - Every Pi with `auto-fix-wifi` installed (9 hosts), read-only: `actions.log`, `detail.log`, link state, a short ping run
+  - Counts are fix cycles ("attempting scoped wifi-only fix" lines) per day; "failing checks" are `detail.log` ping/dns/http check lines that failed
+  - All 9 hosts reachable; no monitor reboot since 10-10; no host currently at the failed-cycle reboot threshold
+- Per-host result
+  - Control Pi (built-in brcmfmac): 0 failing checks on all days; no cycles since early October
+  - Pi with built-in brcmfmac on a separate subnet: 0 failing checks; no cycles since 2026-10-06 (it had 35 / 144 / 63 cycles on 10-04 / 10-05 / 10-06 and ~50-minute reboots that day, then went quiet and stayed quiet)
+  - Another built-in brcmfmac Pi: one event on 10-12 (36 failing checks, one cycle, recovered)
+  - `mt7601u` dongle Pi: cycles/day 5 / 6 / 8 on 10-10 / 10-11 / 10-12, every cycle escalating to the full NetworkManager + reload fix and recovering; last cycle 10-12 10:32, then 0 failing checks for the following ~32 hours
+    - Cause of the stop unknown; nothing was changed on the host
+  - `rtl8192cu` dongle Pi: cycles/day 13 / 11 / 6 / 3 (10-10 to 10-13); failing checks 412 / 330 / 114 / 60; falling but not gone; two events on 10-13 (one escalated, one recovered by the scoped bounce)
+  - `rt2800usb` dongle Pi A: 10-27 failing checks per day, never 3 in a row, no fix cycle ever; steady baseline loss that the monitor correctly ignores
+  - `rt2800usb` dongle Pi B (garage, wifi-only): back on the network; 4-26 single failing checks per day (mostly the HTTP check timing out on name resolution), no cycles since 10-08; earlier it hit the reboot cap (4 per 24 h) on 10-08
+- Relocated Pi (wired only, no wifi dongle)
+  - Came up on ethernet after the move: DHCP lease, default route on `eth0`, 0 % loss over 100 pings at 0.2 s, 100 Mbit link
+  - Monitor idles as designed: logs `no wifi interface found on this host; nothing to monitor` every cycle
+- Dual-NIC Pi on the powerline path
+  - `eth0` 0 % loss over 100 pings; kernel logged a link down/up pair around its boot only (no flaps since)
+  - Wifi side measured at 50 % loss over a 50-ping run forced out of `wlan0`, while the monitor's own checks passed the same hour (1 failing check today); consistent with the dual-NIC ARP effect above, not investigated further
+  - The single powerline outage of 10-11 has not repeated on any wired host
+- What this says
+  - The monitor never needed a reboot in this period; every cycle that started also recovered
+  - Dongle quality dominates: `mt7601u` and `rtl8192cu` cycle, `rt2800usb` is lossy but stays above the cycle threshold, built-in radios are clean
+  - Day-to-day cycle counts on one dongle can fall to zero without any change we made; do not read one quiet day as a fix
+- Leftovers still on hosts (not cleaned: out of scope for a read-only checkup)
+  - Dongle-swap test log and `swap-hold` directory on the `mt7601u` Pi
+  - `swap-hold` directory on the `rtl8192cu` Pi and on the relocated Pi
+  - IP-renewal test log on the `rtl8192cu` Pi and on the dual-NIC Pi
+  - `/etc/auto-fix-wifi.conf.pre-swap*` backups: none found by the check (looked for `/etc/auto-fix-wifi.conf.pre-swap*`)
+- Housekeeping noticed
+  - Repo clones on five Pis sit at older commits than main; the `mt7601u` Pi and the dual-NIC Pi have no clone under `/root`
+  - One older host's config sets `REBOOT_MAX_PER_DAY`, a name the script does not read (the script uses `MAX_REBOOTS_PER_DAY`)
