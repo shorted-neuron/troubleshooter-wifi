@@ -367,11 +367,11 @@ swapped dongles with an `rtl8192cu` dongle (RTL8188CUS) and were watched for abo
   - The monitor never needed a reboot in this period; every cycle that started also recovered
   - Dongle quality dominates: `mt7601u` and `rtl8192cu` cycle, `rt2800usb` is lossy but stays above the cycle threshold, built-in radios are clean
   - Day-to-day cycle counts on one dongle can fall to zero without any change we made; do not read one quiet day as a fix
-- Leftovers still on hosts (not cleaned: out of scope for a read-only checkup)
-  - Dongle-swap test log and `swap-hold` directory on the `mt7601u` Pi
-  - `swap-hold` directory on the `rtl8192cu` Pi and on the relocated Pi
-  - IP-renewal test log on the `rtl8192cu` Pi and on the dual-NIC Pi
-  - `/etc/auto-fix-wifi.conf.pre-swap*` backups: none found by the check (looked for `/etc/auto-fix-wifi.conf.pre-swap*`)
+- Leftovers from the swap test: cleaned the same day
+  - Removed the dongle-swap test log and `swap-hold` directory (with the saved pre-swap config) on the `mt7601u` Pi
+  - Removed `swap-hold` on the `rtl8192cu` Pi and the relocated Pi
+  - Removed the IP-renewal test log on the `rtl8192cu` Pi and the dual-NIC Pi
+  - No `/etc/auto-fix-wifi.conf.pre-swap*` backups existed; live configs untouched
 - Housekeeping noticed
   - Repo clones on five Pis sit at older commits than main; the `mt7601u` Pi and the dual-NIC Pi have no clone under `/root`
   - One older host's config sets `REBOOT_MAX_PER_DAY`, a name the script does not read (the script uses `MAX_REBOOTS_PER_DAY`)
