@@ -3,6 +3,19 @@ troubleshooter-wifi
 
 Scripts to help troubleshoot Wi-Fi issues on Raspberry Pi devices.
 
+## Status: v1.0
+
+- A small utility that the author believes works well. It has kept a fleet of old Raspberry Pis on wifi for weeks, including ones with lossy USB dongles.
+- Use at your own risk, no warranty (see [LICENSE](LICENSE), MIT)
+  - `auto-fix-wifi.sh` runs as root from cron and can restart NetworkManager, reload wifi drivers and **reboot the machine** as a last resort
+  - Read the script and the reboot limits (`MAX_REBOOTS_PER_DAY`, `REBOOT_THRESHOLD`) before installing on anything you cannot reach by other means
+- Tested on
+  - Raspberry Pi OS (Debian 13 "trixie", NetworkManager 1.52) and Raspberry Pi OS (Debian 12 "bookworm", NetworkManager 1.42)
+  - Pi Model B / B+ (armv6), Pi 2 B and Zero 2 W (armv7), Pi 4 B and Pi 5 (aarch64)
+  - Wifi drivers: built-in `brcmfmac`, and USB dongles using `mt7601u`, `rtl8192cu` and `rt2800usb`
+  - Not tested: other distributions, wpa_supplicant without NetworkManager, other wifi chipsets
+- What it cannot fix: a dongle or radio that is simply poor. See [wifi-troubleshooting-general.md](wifi-troubleshooting-general.md) for per-dongle results.
+
 If stuck with a headless Pi that fell off wifi, try this one-liner if you can get access:
 
 ```bash
