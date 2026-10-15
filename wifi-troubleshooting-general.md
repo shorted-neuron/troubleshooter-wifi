@@ -375,6 +375,7 @@ swapped dongles with an `rtl8192cu` dongle (RTL8188CUS) and were watched for abo
 - Housekeeping noticed
   - Repo clones on five Pis sit at older commits than main; the `mt7601u` Pi and the dual-NIC Pi have no clone under `/root`
   - One older host's config sets `REBOOT_MAX_PER_DAY`, a name the script does not read (the script uses `MAX_REBOOTS_PER_DAY`)
+  - Resolved 2026-10-15: clones updated or added, unused config line removed, installed script, cron and logrotate files checked on all hosts and up to date
 
 ### Update, 2026-10-14 and 2026-10-15
 
