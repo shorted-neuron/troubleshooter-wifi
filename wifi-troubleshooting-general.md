@@ -375,3 +375,15 @@ swapped dongles with an `rtl8192cu` dongle (RTL8188CUS) and were watched for abo
 - Housekeeping noticed
   - Repo clones on five Pis sit at older commits than main; the `mt7601u` Pi and the dual-NIC Pi have no clone under `/root`
   - One older host's config sets `REBOOT_MAX_PER_DAY`, a name the script does not read (the script uses `MAX_REBOOTS_PER_DAY`)
+
+### Update, 2026-10-14 and 2026-10-15
+
+- Same method, all 9 hosts reachable; no monitor reboot anywhere; `origin/main` unchanged
+- `mt7601u` Pi: still 0 failing checks on 10-13, 10-14 and 10-15 so far; no cycle since 10-12 10:32 (about 3 days); cause still unknown
+- `rtl8192cu` Pi: cycles/day 4 on 10-13, 4 on 10-14, 1 so far on 10-15 (the latest recovered by the scoped bounce, not the full reload); failing checks 96 / 80 / 15
+  - Still falling, still not gone
+- `rt2800usb` Pi A: 11-15 failing checks a day, no cycles
+- `rt2800usb` Pi B: 9 / 12 / 2 failing checks, no cycles
+- Dual-NIC Pi: 1 / 2 / 0 failing checks; the 10-12 recovery is its last cycle
+- Built-in brcmfmac Pis, including the one with the 10-12 event: 0 failing checks on 10-13 to 10-15
+- Relocated wired Pi: monitor still idling, nothing to monitor
