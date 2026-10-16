@@ -49,7 +49,13 @@
 #     times per 24h (default 4) and never sooner than MIN_REBOOT_INTERVAL
 #     after the previous one (default 60m; accepts e.g. 90s, 60m, 1h, 1d,
 #     any case; a bare number is minutes). Otherwise it only logs (a reboot
-#     that doesn't fix anything must not repeat forever).
+#     that doesn't fix anything must not repeat forever). On a Pi with no
+#     hardware clock the wall clock is stale after a reboot until NTP steps it
+#     (NTP needs the network), so MIN_REBOOT_INTERVAL then counts from uptime.
+#   - Every run reads the Pi firmware's power/thermal flags (vcgencmd
+#     get_throttled; skipped where vcgencmd is absent) and logs to the detail
+#     log and syslog only when a flag is newly set since the previous run of
+#     this boot. DEBUG=1 in the conf also logs the value every run.
 #   - Every run compares the configured GATEWAY_IP with the live default
 #     route on the wifi iface and warns on mismatch (stale config after
 #     moving networks). It never rewrites the config on its own; use
@@ -95,6 +101,7 @@ CONF="/etc/auto-fix-wifi.conf"
 STATE_DIR="/var/lib/auto-fix-wifi"
 FAIL_COUNT_FILE="$STATE_DIR/consecutive_fix_failures"
 REBOOT_TIMES_FILE="$STATE_DIR/reboot_epochs"
+THROTTLE_FILE="$STATE_DIR/throttle_state"
 LOG_DIR="/var/log/auto-fix-wifi"
 DETAIL_LOG="$LOG_DIR/detail.log"
 ACTIONS_LOG="$LOG_DIR/actions.log"
@@ -365,6 +372,7 @@ EOF
   conf_default REBOOT_THRESHOLD "5"
   conf_default MAX_REBOOTS_PER_DAY "4"
   conf_default MIN_REBOOT_INTERVAL "60m"
+  conf_default DEBUG "0"
 }
 
 load_config() {
@@ -415,6 +423,11 @@ load_config() {
     MIN_REBOOT_INTERVAL=60m
   fi
   MIN_REBOOT_INTERVAL_SECS=$(parse_duration "$MIN_REBOOT_INTERVAL")
+  DEBUG=$(conf_get DEBUG)
+  case "$DEBUG" in
+    1|yes|true) DEBUG=1 ;;
+    *) DEBUG=0 ;;
+  esac
 }
 
 parse_duration() {
@@ -681,6 +694,71 @@ last_reboot_epoch() {
   fi
 }
 
+secs_since_last_reboot() {
+  # Prints seconds since the last reboot this script initiated. A Pi without a
+  # hardware clock boots with a stale time until NTP steps it, and NTP needs
+  # the network this script is trying to restore; in that window the wall
+  # clock is behind the recorded reboot time and the difference is negative.
+  # Then the uptime stands in: it is the time since that reboot.
+  last=$(last_reboot_epoch)
+  since=$(( $(date +%s) - last ))
+  if [ "$since" -lt 0 ]; then
+    up=$(cut -d. -f1 /proc/uptime)
+    log_detail "clock is behind the last recorded reboot (no hardware clock and no time sync yet?); using uptime ${up}s as time since that reboot"
+    since=$up
+  fi
+  echo "$since"
+}
+
+decode_throttled() {
+  # $1 = get_throttled bitmask (number); prints the names of the set bits.
+  # Bits 0-3 are the state right now, bits 16-19 mean "has happened since boot".
+  out=""
+  [ $(( $1 & 0x1 )) -eq 0 ] || out="$out under-voltage-now"
+  [ $(( $1 & 0x2 )) -eq 0 ] || out="$out freq-capped-now"
+  [ $(( $1 & 0x4 )) -eq 0 ] || out="$out throttled-now"
+  [ $(( $1 & 0x8 )) -eq 0 ] || out="$out soft-temp-limit-now"
+  [ $(( $1 & 0x10000 )) -eq 0 ] || out="$out under-voltage-since-boot"
+  [ $(( $1 & 0x20000 )) -eq 0 ] || out="$out freq-capped-since-boot"
+  [ $(( $1 & 0x40000 )) -eq 0 ] || out="$out throttled-since-boot"
+  [ $(( $1 & 0x80000 )) -eq 0 ] || out="$out soft-temp-limit-since-boot"
+  echo "${out:-none}"
+}
+
+check_throttle() {
+  # Pi firmware power/thermal flags. Logs (detail log + syslog warning) only
+  # when a flag is newly set compared with the previous run of this boot, so
+  # one event is reported once, not on every run. DEBUG=1 in the conf also logs
+  # the value every run. The "since boot" bits are cleared only by a reboot;
+  # the saved state is keyed by boot id, so a reboot starts again from 0.
+  command -v vcgencmd >/dev/null 2>&1 || return 0
+  raw=$(vcgencmd get_throttled) || { log_detail "throttle: vcgencmd get_throttled failed"; return 0; }
+  cur=${raw#throttled=}
+  case "$cur" in
+    0x[0-9a-fA-F]*) ;;
+    *) log_detail "throttle: unexpected vcgencmd output '$raw'"; return 0 ;;
+  esac
+  boot=$(cat /proc/sys/kernel/random/boot_id) || boot=""
+  prev_boot=""; prev=0x0
+  if [ -s "$THROTTLE_FILE" ]; then
+    read -r prev_boot prev <"$THROTTLE_FILE" || true
+  fi
+  case "$prev" in
+    0x[0-9a-fA-F]*) ;;
+    *) prev=0x0 ;;
+  esac
+  [ "$prev_boot" = "$boot" ] || prev=0x0
+  new=$(( cur & ~prev ))
+  if [ "$new" -ne 0 ]; then
+    msg="throttle flags changed: newly set: $(decode_throttled "$new") (get_throttled=$cur, previous $prev)"
+    log_detail "$msg"
+    log_syslog warning "$msg"
+  elif [ "$DEBUG" = "1" ]; then
+    log_detail "throttle: get_throttled=$cur ($(decode_throttled "$cur"))"
+  fi
+  echo "$boot $cur" >"$THROTTLE_FILE"
+}
+
 # ---------------------------------------------------------------------------
 # --reconfigure / --check (interactive, never fix or reboot)
 # ---------------------------------------------------------------------------
@@ -797,6 +875,10 @@ if [ "$MODE" = "reconfigure" ]; then
   load_config          # pick up the new HTTP_CHECK_URL
 fi
 
+if [ "$MODE" = "run" ]; then
+  check_throttle
+fi
+
 if [ -z "$WIFI_IFACE" ]; then
   # no wifi interface configured and none found (wired-only host, or a dongle
   # that is not plugged in): nothing to check, so no fix or reboot path either.
@@ -887,10 +969,11 @@ log_action err "fix did not recover connectivity ($(results)); consecutive faile
 
 if [ "$fail_count" -ge "$REBOOT_THRESHOLD" ]; then
   recent=$(reboots_last_24h)
+  since=$(secs_since_last_reboot)
   if [ "$recent" -ge "$MAX_REBOOTS_PER_DAY" ]; then
     # a reboot that didn't help last time won't help now; stop and just log
     log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but already rebooted $recent times in the last 24h (max $MAX_REBOOTS_PER_DAY); NOT rebooting, needs human attention"
-  elif since=$(( $(date +%s) - $(last_reboot_epoch) )); [ "$since" -lt "$MIN_REBOOT_INTERVAL_SECS" ]; then
+  elif [ "$since" -lt "$MIN_REBOOT_INTERVAL_SECS" ]; then
     # fail counter stays at/above threshold, so the next run re-evaluates
     log_action crit "reached $REBOOT_THRESHOLD consecutive failed fix cycles ($(results)) but last reboot was ${since}s ago (MIN_REBOOT_INTERVAL=$MIN_REBOOT_INTERVAL); NOT rebooting yet, $((MIN_REBOOT_INTERVAL_SECS - since))s to go"
   else
