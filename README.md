@@ -3,7 +3,7 @@ troubleshooter-wifi
 
 Scripts to help troubleshoot Wi-Fi issues on Raspberry Pi devices.
 
-## Status: v1.0
+## Status: v1.1
 
 - A small utility that the author believes works well. It has kept a fleet of old Raspberry Pis on wifi for weeks, including ones with lossy USB dongles.
 - Use at your own risk, no warranty (see [LICENSE](LICENSE), MIT)
