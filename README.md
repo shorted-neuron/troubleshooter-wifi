@@ -3,7 +3,7 @@ troubleshooter-wifi
 
 Scripts to help troubleshoot Wi-Fi issues on Raspberry Pi devices.
 
-## Status: v1.0
+## Status: v1.1
 
 - A small utility that the author believes works well. It has kept a fleet of old Raspberry Pis on wifi for weeks, including ones with lossy USB dongles.
 - Use at your own risk, no warranty (see [LICENSE](LICENSE), MIT)
@@ -61,7 +61,9 @@ also fails does it try a scoped wifi-only fix (disconnect + reload the wifi
 driver module + reconnect) before escalating to a full fix (stop
 NetworkManager, reload the module, start NetworkManager). If the fix doesn't
 recover connectivity for 5 consecutive cron cycles (configurable; about 100 minutes at 20-minute pacing), it reboots
-as a last resort, at most 4 times per 24h (`MAX_REBOOTS_PER_DAY`) and never sooner than `MIN_REBOOT_INTERVAL` (default `60m`; accepts e.g. `90s`, `60m`, `1h`, `1d`, any case; a bare number is minutes) after the previous one. Both defaults apply even if absent from the conf. Otherwise it only logs, and re-checks each run.
+as a last resort, at most 4 times per 24h (`MAX_REBOOTS_PER_DAY`) and never sooner than `MIN_REBOOT_INTERVAL` (default `60m`; accepts e.g. `90s`, `60m`, `1h`, `1d`, any case; a bare number is minutes) after the previous one. Both defaults apply even if absent from the conf. Otherwise it only logs, and re-checks each run. A Pi with no hardware clock boots with a stale time until NTP steps it, which needs the network this script is trying to restore; until then `MIN_REBOOT_INTERVAL` counts from uptime instead of the (wrong) wall clock.
+
+Each run also reads the Pi firmware's power and thermal flags (`vcgencmd get_throttled`; skipped on hosts without `vcgencmd`): under-voltage, frequency cap, throttling, soft temperature limit, each as "now" and "has happened since boot". A flag is logged (`detail.log` and a syslog warning) only the first time it is seen after it is newly set, not on every run; the "since boot" flags clear only on reboot, and a reboot starts the comparison over. It also counts the kernel's `Undervoltage detected` messages in `dmesg` and logs new ones the same way, which catches short dips between runs. Set `DEBUG=1` in the conf to also log the values on every run.
 
 After each fix step it does not check once and give up: it polls the whole battery for up to
 `FIX_SETTLE_WAIT` seconds (default 90, `0` = one immediate check), because a reconnect after a driver

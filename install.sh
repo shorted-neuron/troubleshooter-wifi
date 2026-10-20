@@ -117,6 +117,8 @@ host_offset() {
 }
 existing_sched=""
 if $SUDO test -f "$CRON"; then
+  # $1 is awk's field, not a shell variable
+  # shellcheck disable=SC2016
   existing_sched=$($SUDO awk '!/^[[:space:]]*#/ && NF { print $1; exit }' "$CRON" || true)
 fi
 if [ -n "$CRON_OFFSET" ]; then
