@@ -53,9 +53,11 @@
 #     hardware clock the wall clock is stale after a reboot until NTP steps it
 #     (NTP needs the network), so MIN_REBOOT_INTERVAL then counts from uptime.
 #   - Every run reads the Pi firmware's power/thermal flags (vcgencmd
-#     get_throttled; skipped where vcgencmd is absent) and logs to the detail
-#     log and syslog only when a flag is newly set since the previous run of
-#     this boot. DEBUG=1 in the conf also logs the value every run.
+#     get_throttled; skipped where vcgencmd is absent) and counts the kernel's
+#     "Undervoltage detected" messages in dmesg. It logs to the detail log and
+#     syslog only when a flag is newly set or new under-voltage events appeared
+#     since the previous run of this boot. DEBUG=1 in the conf also logs the
+#     values every run.
 #   - Every run compares the configured GATEWAY_IP with the live default
 #     route on the wifi iface and warns on mismatch (stale config after
 #     moving networks). It never rewrites the config on its own; use
@@ -722,41 +724,74 @@ decode_throttled() {
   [ $(( $1 & 0x20000 )) -eq 0 ] || out="$out freq-capped-since-boot"
   [ $(( $1 & 0x40000 )) -eq 0 ] || out="$out throttled-since-boot"
   [ $(( $1 & 0x80000 )) -eq 0 ] || out="$out soft-temp-limit-since-boot"
+  out=${out# }
   echo "${out:-none}"
 }
 
 check_throttle() {
-  # Pi firmware power/thermal flags. Logs (detail log + syslog warning) only
-  # when a flag is newly set compared with the previous run of this boot, so
-  # one event is reported once, not on every run. DEBUG=1 in the conf also logs
-  # the value every run. The "since boot" bits are cleared only by a reboot;
-  # the saved state is keyed by boot id, so a reboot starts again from 0.
-  command -v vcgencmd >/dev/null 2>&1 || return 0
-  raw=$(vcgencmd get_throttled) || { log_detail "throttle: vcgencmd get_throttled failed"; return 0; }
-  cur=${raw#throttled=}
-  case "$cur" in
-    0x[0-9a-fA-F]*) ;;
-    *) log_detail "throttle: unexpected vcgencmd output '$raw'"; return 0 ;;
-  esac
+  # Pi power/thermal health, logged (detail log + syslog warning) only when
+  # something is new since the previous run of this boot, so one event is
+  # reported once, not on every run. DEBUG=1 in the conf also logs the values
+  # every run.
+  #   - firmware flags (vcgencmd get_throttled): newly set bits. The "since
+  #     boot" bits are cleared only by a reboot. The flags are a sample taken
+  #     once per run, so a short dip between runs only shows in the since-boot
+  #     bits.
+  #   - kernel under-voltage events (dmesg "Undervoltage detected"): count of
+  #     new ones, which also catches dips between runs and repeats of a flag
+  #     that is already set.
+  # The saved state is keyed by boot id, so a reboot starts again from 0.
   boot=$(cat /proc/sys/kernel/random/boot_id) || boot=""
-  prev_boot=""; prev=0x0
+  prev_boot=""; prev=0x0; prev_uv=0
   if [ -s "$THROTTLE_FILE" ]; then
-    read -r prev_boot prev <"$THROTTLE_FILE" || true
+    read -r prev_boot prev prev_uv <"$THROTTLE_FILE" || true
   fi
   case "$prev" in
     0x[0-9a-fA-F]*) ;;
     *) prev=0x0 ;;
   esac
-  [ "$prev_boot" = "$boot" ] || prev=0x0
+  case "$prev_uv" in
+    ''|*[!0-9]*) prev_uv=0 ;;
+  esac
+  [ "$prev_boot" = "$boot" ] || { prev=0x0; prev_uv=0; }
+
+  cur=$prev
+  if command -v vcgencmd >/dev/null 2>&1; then
+    if raw=$(vcgencmd get_throttled); then
+      case "${raw#throttled=}" in
+        0x[0-9a-fA-F]*) cur=${raw#throttled=} ;;
+        *) log_detail "throttle: unexpected vcgencmd output '$raw'" ;;
+      esac
+    else
+      log_detail "throttle: vcgencmd get_throttled failed"
+    fi
+  fi
   new=$(( cur & ~prev ))
   if [ "$new" -ne 0 ]; then
     msg="throttle flags changed: newly set: $(decode_throttled "$new") (get_throttled=$cur, previous $prev)"
     log_detail "$msg"
     log_syslog warning "$msg"
-  elif [ "$DEBUG" = "1" ]; then
-    log_detail "throttle: get_throttled=$cur ($(decode_throttled "$cur"))"
   fi
-  echo "$boot $cur" >"$THROTTLE_FILE"
+
+  uv=$prev_uv
+  if dmesg_out=$(dmesg); then
+    uv=$(printf '%s\n' "$dmesg_out" | grep -c "Undervoltage detected") || true
+    # fewer than before: the kernel log buffer wrapped; count from 0
+    [ "$uv" -ge "$prev_uv" ] || prev_uv=0
+  else
+    log_detail "throttle: dmesg failed; kernel under-voltage events not counted"
+  fi
+  new_uv=$(( uv - prev_uv ))
+  if [ "$new_uv" -gt 0 ]; then
+    msg="kernel logged $new_uv new under-voltage event(s) since the last run ($uv since boot)"
+    log_detail "$msg"
+    log_syslog warning "$msg"
+  fi
+
+  if [ "$DEBUG" = "1" ]; then
+    log_detail "throttle: get_throttled=$cur ($(decode_throttled "$cur")), kernel under-voltage events since boot: $uv"
+  fi
+  echo "$boot $cur $uv" >"$THROTTLE_FILE"
 }
 
 # ---------------------------------------------------------------------------
