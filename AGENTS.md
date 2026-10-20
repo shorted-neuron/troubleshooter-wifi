@@ -38,10 +38,10 @@ action is taken.
 
 - No test suite. Validate shell scripts with `sh -n <script>` (syntax check)
   after edits.
-- Also run `shellcheck --shell=sh -S warning <script>` and
-  `checkbashisms -f <script>` (Debian/Ubuntu packages `shellcheck` and
-  `devscripts`). Both must exit 0. Lower-severity shellcheck notes
-  (SC2016, SC2018, SC2019) already in the scripts are tracked in `TODO.md`.
+- Also run `shellcheck --shell=sh <script>` and `checkbashisms -f <script>`
+  (Debian/Ubuntu packages `shellcheck` and `devscripts`). Both must be clean
+  (exit 0). Fix a finding, or silence one deliberate case with a
+  `# shellcheck disable=SCxxxx` line and a reason.
 - If modifying module-unload/reload logic, verify module names referenced
   (`brcmfmac_cyw` vs `brcmfmac_wcc`) aren't reintroducing the fixed bug
   described in `wifi-troubleshooting-pi-zero2w.md`.

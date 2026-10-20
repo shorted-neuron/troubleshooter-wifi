@@ -435,7 +435,7 @@ load_config() {
 parse_duration() {
   # $1 = duration like 90s, 60m, 1h, 1d (any case); bare number = minutes.
   # Prints seconds, returns 1 (printing nothing) if unparseable.
-  d=$(printf '%s' "$1" | tr 'A-Z' 'a-z')
+  d=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
   case "$d" in
     *[!0-9smhd]*|''|[smhd]*|*[smhd]?*) return 1 ;;
   esac
@@ -807,7 +807,7 @@ valid_http_url() {
 }
 
 is_none() {
-  [ "$(printf '%s' "$1" | tr 'A-Z' 'a-z')" = "none" ]
+  [ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "none" ]
 }
 
 prompt_http_url() {
