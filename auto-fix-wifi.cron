@@ -4,7 +4,8 @@
 # /usr/local/sbin/auto-fix-wifi.sh.
 #
 # Runs every 20 minutes as root. install.sh replaces the leading */20 with
-# N-59/20, a per-host minute offset (0-19) (see ./install.sh --cron-offset), so hosts
+# N-59/step, a per-host minute offset (see ./install.sh --cron-offset and
+# --cron-step; an installed schedule is kept on upgrade), so hosts
 # do not all run in the same minute; do the same by hand if you copy this file.
 # The script has its own flock-based lock, so a slow run (retries + fix) will
 # never overlap with the next cron tick.

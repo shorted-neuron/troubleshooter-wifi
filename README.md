@@ -3,7 +3,7 @@ troubleshooter-wifi
 
 Scripts to help troubleshoot Wi-Fi issues on Raspberry Pi devices.
 
-## Status: v1.1
+## Status: v1.2
 
 - A small utility that the author believes works well. It has kept a fleet of old Raspberry Pis on wifi for weeks, including ones with lossy USB dongles.
 - Use at your own risk, no warranty (see [LICENSE](LICENSE), MIT)
@@ -110,7 +110,8 @@ trailing characters in `HTTP_CHECK_URL` (`cat -A /etc/auto-fix-wifi.conf` shows 
 ./install.sh --reconfigure            # same, plus re-discover iface/gateway/DNS/driver
 ./install.sh --http-url https://example.invalid/   # implies --reconfigure, no prompt
 ./install.sh --http-url none          # ...and skip the HTTP check
-./install.sh --cron-offset 3          # run at minutes 3, 23, 43 (0-19, or auto)
+./install.sh --cron-offset 3          # run at minutes 3, 23, 43 (0 to step-1, or auto)
+./install.sh --cron-step 5            # run every 5 minutes (default 20)
 ```
 
 `install.sh` only installs files; all configuration lives in `auto-fix-wifi.sh`, and
@@ -127,13 +128,18 @@ The installer exits with the delegated script's status (0 ok, 2 bad arguments su
 an invalid `--http-url`, 1 a ping/DNS check failed, 3 another instance was running);
 the files are installed in every case.
 
-The cron schedule is every 20 minutes at a per-host minute offset, so a fleet does not
-run (and bounce wifi after an AP or router blip) all in the same minute.
-- Default offset: the last byte of the wifi MAC (else eth0's) modulo 20, so it is stable
-  and can be worked out from an inventory
-- A fresh install, or an upgrade from the old 10-minute schedule, uses it; an upgrade keeps
-  a 20-minute schedule that is already installed
-- `--cron-offset N` (0-19) sets it explicitly; `--cron-offset auto` re-applies the default
+The cron schedule is every 20 minutes by default, at a per-host minute offset, so a fleet
+does not run (and bounce wifi after an AP or router blip) all in the same minute.
+- Default offset: the last byte of the wifi MAC (else eth0's) modulo the step, so it is
+  stable and can be worked out from an inventory
+- A fresh install uses it; an upgrade keeps the schedule already installed, whatever its step
+  (so a hand-edited or `--cron-step` schedule survives re-running `install.sh`)
+- `--cron-step N` sets the minutes between runs: 1 2 3 4 5 6 10 12 15 20 30. An installed
+  offset that fits the new step is kept, otherwise the default offset is used
+- `--cron-offset N` (0 to step-1) sets the offset explicitly; `--cron-offset auto` re-applies
+  the default
+- A shorter step means faster recovery but more wifi bounces on a flaky link; the
+  consecutive-failure reboot threshold counts cron cycles, so it takes less wall time
 
 On a host with no wifi interface at all (wired-only, or a dongle that is not plugged in)
 every mode says so and exits 0: no checks, no fix, no reboot. It looks again on every run
